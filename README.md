@@ -1,1913 +1,1247 @@
-# NEXUS
+# NEXUS --- Local Multi-AI Agents
 
-## Multi-Model Intelligence Network with Tiered AI Memory
+> **NEXUS** is a local, heterogeneous multi-model AI infrastructure
+> designed to power **SwarmCode**, an AI-native VS Code development
+> environment.
+>
+> Different machines in the cluster can run different AI models. NEXUS
+> discovers these nodes, routes work according to model capabilities,
+> provides long-context memory through VRAM/RAM/NVMe tiers, coordinates
+> multi-agent collaboration, and verifies results through cross-model
+> review.
 
-NEXUS is a modified `llama.cpp`-based local AI infrastructure designed to combine:
+------------------------------------------------------------------------
 
-- **LLM inference on local hardware**
-- **GPU VRAM + system RAM + NVMe SSD tiered KV cache**
-- **TurboQuant KV-cache compression**
-- **Multiple heterogeneous AI nodes**
-- **Automatic peer discovery**
-- **Multi-model collaboration and cross-verification**
-- **OpenAI-compatible model serving**
-- **Workspace-scoped project context**
-- **A web-based AI interface**
+## Overview
 
-The repository currently contains the core inference engine, memory extensions, cluster services, server components, UI, and the experimental TurboQuant+ research implementation.
+NEXUS is built around a simple idea:
 
-> NEXUS is built as a modified fork of [llama.cpp](https://github.com/ggml-org/llama.cpp).
-
----
-
-# 1. High-Level Architecture
-
-NEXUS can be understood as four major layers:
-
-```text
-┌──────────────────────────────────────────────────────────────────┐
-│                         NEXUS HOST / UI                           │
-│                                                                  │
-│  Web UI / IDE / Host Integration                                 │
-│  ├── Chat                                                        │
-│  ├── Files / Workspace                                           │
-│  ├── Model Selection                                             │
-│  ├── KV Cache Configuration                                      │
-│  ├── MCP / Tools                                                 │
-│  └── Cluster / Agent Controls                                    │
-└──────────────────────────────┬───────────────────────────────────┘
-                               │ HTTP / WebSocket
-                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                     CLUSTER / AGENT LAYER                        │
-│                                                                  │
-│  Python Cluster Services                                         │
-│  ├── Node configuration                                          │
-│  ├── Peer discovery                                              │
-│  ├── Workspace scope                                             │
-│  ├── Project context                                             │
-│  └── Multi-model consensus engine                                │
-│                                                                  │
-│  C++ Swarm Support                                                │
-│  └── UDP node discovery                                          │
-└──────────────────────────────┬───────────────────────────────────┘
-                               │
-                               │ OpenAI-compatible API
-                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                      LLAMA SERVER LAYER                          │
-│                                                                  │
-│  llama-server                                                    │
-│  ├── HTTP API                                                    │
-│  ├── Request queue                                               │
-│  ├── Server slots                                                │
-│  ├── Batching                                                    │
-│  ├── Streaming                                                   │
-│  ├── MCP / tools                                                 │
-│  ├── Model management                                            │
-│  └── Cluster/swarm integration                                  │
-└──────────────────────────────┬───────────────────────────────────┘
-                               │
-                               ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                     LLAMA INFERENCE CORE                          │
-│                                                                  │
-│  llama.cpp                                                        │
-│  ├── Model loader                                                │
-│  ├── Context                                                     │
-│  ├── KV cache                                                    │
-│  ├── Attention / graph                                           │
-│  ├── Sampling                                                   │
-│  ├── Quantization                                                │
-│  └── Memory management                                           │
-│                                                                  │
-│              ┌───────────────────────────────┐                   │
-│              │ NEXUS Memory Extensions      │                   │
-│              │                               │                   │
-│              │ SSD KV Swap                   │                   │
-│              │ TurboQuant KV Compression     │                   │
-│              │ Block indexing                │                   │
-│              │ LRU eviction                  │                   │
-│              └──────────────┬────────────────┘                   │
-└─────────────────────────────┼────────────────────────────────────┘
-                              │
-                              ▼
-                 ┌─────────────────────────┐
-                 │     Memory Hierarchy    │
-                 │                         │
-                 │ GPU VRAM                │
-                 │      ↓                  │
-                 │ System RAM              │
-                 │      ↓                  │
-                 │ NVMe SSD                │
-                 └─────────────────────────┘
+``` text
+                    ┌─────────────────────────┐
+                    │       SWARMCODE         │
+                    │   AI-Native VS Code     │
+                    └────────────┬────────────┘
+                                 │
+                         NEXUS / MIND
+                       Orchestration Layer
+                                 │
+          ┌──────────────────────┼──────────────────────┐
+          │                      │                      │
+          ▼                      ▼                      ▼
+     Model Node A           Model Node B           Model Node C
+     Coding Model           Reasoning Model        Review Model
+          │                      │                      │
+          ▼                      ▼                      ▼
+       llama.cpp             llama.cpp             llama.cpp
+          │                      │                      │
+       VRAM/RAM/SSD          VRAM/RAM/SSD          VRAM/RAM/SSD
+          │                      │                      │
+          └──────────────────────┼──────────────────────┘
+                                 ▼
+                        Multi-Model Review
+                                 │
+                                 ▼
+                       Verified Development
 ```
 
----
-
-# 2. Core Design Philosophy
-
-NEXUS is based on a different approach from conventional distributed inference systems.
-
-Instead of splitting one model across multiple computers, the cluster architecture is designed so that:
-
-```text
-Machine A → Model A
-Machine B → Model B
-Machine C → Model C
-Machine D → Model D
-```
-
-Each node can specialize in a different task.
+Unlike a traditional inference cluster where every server runs the same
+model, NEXUS is designed as a **heterogeneous model network**.
 
 For example:
 
-```text
-┌─────────────── NEXUS CLUSTER ────────────────┐
-
- Node A
- Qwen Coder
- Role: Coding
-       │
-       │
- Node B
- Llama
- Role: Architecture
-       │
-       │
- Node C
- DeepSeek
- Role: Review
-       │
-       │
- Node D
- Vision Model
- Role: Visual analysis
-
-              ↓
-
-       Consensus Engine
-
-              ↓
-
-       Unified Result
+``` text
+Node 01 → Qwen Coder      → Code generation
+Node 02 → DeepSeek        → Architecture / reasoning
+Node 03 → Llama           → Review
+Node 04 → Security model  → Security analysis
+Node 05 → Small model     → Fast utility tasks
 ```
 
-This makes the cluster a **team of different models**, rather than a distributed copy of the same model.
+The model is therefore selected according to the task and available
+capabilities rather than being hard-coded into the IDE.
 
----
+------------------------------------------------------------------------
 
-# 3. Repository Structure
+# Core Goals
 
-The important architecture-related directories are:
+NEXUS combines several systems into one local AI platform:
 
-```text
-NEXUS/
-└── MIND — Multi-model Intelligence Network Distributed/
+-   Local LLM inference through `llama.cpp`
+-   Heterogeneous multi-model clustering
+-   Automatic node discovery
+-   Model and capability discovery
+-   Multi-agent planning and collaboration
+-   Cross-model verification and consensus
+-   VRAM → RAM → NVMe context/KV tiering
+-   TurboQuant KV compression
+-   Workspace-aware AI context
+-   IDE filesystem and Git integration
+-   Tool execution through a controlled Tool Gateway
+-   VS Code-native AI workbench through SwarmCode
+-   Human approval before applying code changes
+-   Local-first operation without requiring a cloud AI provider
+
+------------------------------------------------------------------------
+
+# Project Architecture
+
+The repository contains two major systems:
+
+``` text
+NEXUS-Local-Multi-Ai-agents/
+│
+├── MIND — Multi-model Intelligence Network Distributed/
+│   │
+│   ├── llama.cpp
+│   ├── GGML
+│   ├── KV memory / SSD swap
+│   ├── TurboQuant
+│   ├── llama-server
+│   │
+│   ├── cluster/
+│   │   ├── discovery.py
+│   │   ├── node_config.py
+│   │   ├── cluster_daemon.py
+│   │   ├── cluster_server.py
+│   │   ├── agent_server.py
+│   │   └── consensus_engine.py
+│   │
+│   └── tools/server/
+│       ├── server.cpp
+│       ├── server-context.cpp
+│       ├── server-task.cpp
+│       ├── server-queue.cpp
+│       ├── server-stream.cpp
+│       ├── server-tools.cpp
+│       ├── server-mcp.cpp
+│       └── server-swarm.cpp
+│
+└── SwarmCode/
     │
-    ├── app/
-    │   └── CLI/application entry points
+    ├── VS Code workbench
     │
-    ├── src/
-    │   ├── llama.cpp
-    │   ├── llama-context.cpp
-    │   ├── llama-model.cpp
-    │   ├── llama-kv-cache.cpp
-    │   ├── llama-kv-swap.cpp
-    │   ├── llama-kv-swap.h
-    │   ├── llama-turboquant.cpp
-    │   ├── llama-turboquant.h
-    │   ├── llama-memory.cpp
-    │   └── ...
+    ├── src/vs/workbench/contrib/swarmcode/
+    │   ├── common/
+    │   └── browser/
     │
-    ├── common/
-    │   ├── common.cpp
-    │   ├── arg.cpp
-    │   ├── sampling.cpp
-    │   ├── speculative.cpp
-    │   └── ...
-    │
-    ├── tools/
-    │   ├── server/
-    │   │   ├── server.cpp
-    │   │   ├── server-context.cpp
-    │   │   ├── server-task.cpp
-    │   │   ├── server-queue.cpp
-    │   │   ├── server-stream.cpp
-    │   │   ├── server-tools.cpp
-    │   │   ├── server-mcp.cpp
-    │   │   ├── server-swarm.cpp
-    │   │   └── ...
-    │   │
-    │   └── ui/
-    │       └── src/
-    │           ├── components/
-    │           ├── stores/
-    │           ├── routes/
-    │           └── ...
-    │
-    ├── cluster/
-    │   ├── discovery.py
-    │   ├── cluster_server.py
-    │   ├── agent_server.py
-    │   ├── cluster_daemon.py
-    │   ├── consensus_engine.py
-    │   ├── node_config.py
-    │   ├── config.example.json
-    │   └── start_node.sh
-    │
-    ├── ggml/
-    │   └── Low-level tensor and backend engine
-    │
-    ├── turboquant_plus-main/
-    │   ├── turboquant research implementation
-    │   ├── benchmarks/
-    │   ├── docs/
-    │   ├── tests/
-    │   └── research papers/notes
-    │
-    ├── conversion/
-    ├── examples/
-    ├── tests/
-    ├── docs/
-    ├── scripts/
-    └── .devops/
+    └── extensions/swarmcode/
+        ├── nexusClient.ts
+        ├── contextEngine.ts
+        ├── toolGateway.ts
+        ├── taskManager.ts
+        ├── gitBridge.ts
+        ├── discovery/
+        ├── orchestrator/
+        └── views/
 ```
 
----
+------------------------------------------------------------------------
 
-# 4. Inference Engine
+# 1. MIND / NEXUS Backend
 
-At the bottom of NEXUS is the `llama.cpp` inference engine.
+The MIND layer is the distributed intelligence and inference
+infrastructure.
 
-The main components are:
+It is responsible for:
 
-```text
-Application
-    │
-    ▼
-common/
-    │
-    ▼
-llama/
-    │
-    ├── Model
-    ├── Context
-    ├── Batch
-    ├── KV Cache
-    ├── Memory
-    ├── Graph
-    └── Sampling
-    │
-    ▼
-ggml
-    │
-    ├── CPU
-    ├── CUDA
-    ├── Metal
-    ├── Vulkan
-    ├── HIP
-    ├── SYCL
-    ├── OpenCL
-    └── other backends
+-   Model serving
+-   Node discovery
+-   Cluster management
+-   Agent coordination
+-   Context management
+-   Task planning
+-   Multi-model collaboration
+-   Consensus and verification
+-   KV-cache memory management
+
+------------------------------------------------------------------------
+
+# 2. Heterogeneous Model Nodes
+
+Each server is an independent inference node.
+
+A node can run its own model:
+
+``` text
+┌─────────────────────────────────────┐
+│ NEXUS Node                          │
+├─────────────────────────────────────┤
+│ Model: Qwen / Llama / DeepSeek / ...│
+│ Backend: llama.cpp                  │
+│ Context: node-specific              │
+│ VRAM: node-specific                 │
+│ RAM: node-specific                  │
+│ SSD: node-specific                  │
+│ Capabilities: node-specific         │
+└─────────────────────────────────────┘
 ```
 
-The repository retains the broad hardware-backend architecture of `llama.cpp`.
+Nodes expose information such as:
 
----
+-   Node ID
+-   Hostname
+-   API address
+-   API port
+-   Model
+-   Backend
+-   VRAM
+-   RAM
+-   SSD capacity
+-   Maximum context
+-   Capabilities
+-   Tags
+-   Role
 
-# 5. NEXUS Tiered KV Cache
+The cluster can probe local inference servers using endpoints such as:
 
-One of the main NEXUS modifications is the tiered KV-cache system.
-
-The implementation is centered around:
-
-```text
-src/llama-kv-swap.h
-src/llama-kv-swap.cpp
+``` text
+/health
+/props
+/v1/models
 ```
 
-The cache is divided into three conceptual tiers:
+This allows NEXUS to determine what is actually available instead of
+assuming that all nodes run the same model.
 
-```text
-             HOT
-        ┌─────────────┐
-        │   GPU VRAM  │
-        └──────┬──────┘
-               │
-               ▼
-             WARM
-        ┌─────────────┐
-        │ System RAM  │
-        └──────┬──────┘
-               │
-               ▼
-             COLD
-        ┌─────────────┐
-        │   NVMe SSD  │
-        └─────────────┘
+------------------------------------------------------------------------
+
+# 3. Capability-Based Model Routing
+
+NEXUS is designed around:
+
+``` text
+Task
+  ↓
+Required capabilities
+  ↓
+Available nodes
+  ↓
+Model selection
+  ↓
+Execution
 ```
 
-The implementation defines:
+Example:
 
-```cpp
-enum class llama_kv_block_loc {
-    HOT_VRAM,
-    WARM_RAM,
-    COLD_SSD
-};
+``` text
+"Design the architecture"
+        ↓
+reasoning + architecture
+        ↓
+DeepSeek-capable node
 ```
 
----
-
-# 6. KV Block Management
-
-The cache is managed in blocks rather than treating the complete KV cache as one monolithic allocation.
-
-A block contains metadata such as:
-
-```text
-Block ID
-├── Sequence ID
-├── Starting position
-└── Token count
-
-Location
-├── VRAM
-├── RAM
-└── SSD
-
-Storage
-├── Cell start
-├── SSD slot
-├── RAM pointer
-└── Stream ID
-
-Management
-├── Access timestamp
-└── Dirty state
-
-Indexing
-└── Token signature
+``` text
+"Implement the API"
+        ↓
+code_generation + code_editing
+        ↓
+coding-capable node
 ```
 
-The default KV swap block size is:
-
-```text
-32 tokens
+``` text
+"Review authentication security"
+        ↓
+security_analysis + code_review
+        ↓
+security/reviewer node
 ```
 
----
+This allows the cluster to evolve without requiring changes in SwarmCode
+whenever a model is replaced.
 
-# 7. LRU Eviction
+------------------------------------------------------------------------
 
-When the hot/warm memory tiers become constrained, NEXUS can evict KV blocks using an LRU-style mechanism.
+# 4. Multi-Agent Collaboration
 
-Conceptually:
+A task can be distributed across multiple specialized agents.
 
-```text
-KV Cache
+Example:
 
-Block A ─ recently used
-Block B ─ recently used
-Block C ─ old
-Block D ─ very old
-               │
-               ▼
-          LRU Selection
-               │
-               ▼
-        Block D → SSD
+``` text
+User
+ │
+ ▼
+Planner / Architect
+ │
+ ├──────────────┐
+ ▼              ▼
+Coder          Security
+ │              │
+ ▼              ▼
+Tests         Review
+ │              │
+ └───────┬──────┘
+         ▼
+   Consensus / Verification
+         │
+         ▼
+    Final Proposal
 ```
 
-The tiered manager maintains:
+Agents can have different responsibilities and different underlying
+models.
 
-```text
-lru_list
-lru_map
-warm_ram_list
-warm_ram_map
+Typical roles include:
+
+-   Architect
+-   Coder
+-   Debugger
+-   Tester
+-   Reviewer
+-   Security reviewer
+-   Researcher
+-   Documentation agent
+
+------------------------------------------------------------------------
+
+# 5. Consensus and Verification
+
+NEXUS includes a multi-model consensus engine.
+
+The general flow is:
+
+``` text
+Independent proposals
+        ↓
+Cross-model verification
+        ↓
+Issues found?
+   ┌────┴────┐
+   │         │
+  YES        NO
+   │         │
+Revision     │
+   │         │
+   └────┬────┘
+        ▼
+  Verification
+        ↓
+   Final result
 ```
 
-This allows blocks to move between memory tiers while maintaining their metadata.
+The system does not treat an unavailable backend or timeout as an
+approval.
 
----
+Verification can therefore produce states such as:
 
-# 8. Conditional SSD Recall
-
-NEXUS also contains a lightweight token-based block index.
-
-Each block can maintain a token signature consisting of:
-
-```text
-64-bit Bloom filter
-+
-Exact token list
+``` text
+APPROVED
+NEEDS_REVIEW
+REJECTED
 ```
 
-When a new query arrives:
+The goal is not simply to ask the same model repeatedly, but to use
+**different models with different reasoning characteristics** as
+independent participants.
 
-```text
-Query tokens
-      │
-      ▼
-Token signature matching
-      │
-      ├── No likely match
-      │       ↓
-      │   Avoid SSD I/O
-      │
-      └── Likely match
-              ↓
-        Recall block
-              │
-              ▼
-          SSD → RAM
+------------------------------------------------------------------------
+
+# 6. Context and Memory System
+
+NEXUS extends model context beyond GPU VRAM.
+
+The KV memory hierarchy is:
+
+``` text
+HOT
+VRAM
+ │
+ ▼
+WARM
+System RAM
+ │
+ ▼
+COLD
+NVMe SSD
 ```
 
-This is intended to prevent unnecessary SSD operations when cold KV blocks are unlikely to be relevant.
+This allows context/KV data to be moved between storage tiers depending
+on availability and usage.
 
----
+The system includes:
 
-# 9. KV Storage Engines
+-   KV block management
+-   LRU-based management
+-   SSD-backed KV storage
+-   Persistent KV metadata
+-   Token-based block indexing
+-   Configurable swap block size
+-   Multiple I/O strategies
+-   State save/load support
 
-The KV swap subsystem defines several I/O modes:
+The core idea is:
 
-```text
-POSIX_ALIGNED
-    │
-    └── 4 KB aligned file I/O
+``` text
+GPU VRAM
+    ↓
+fastest / active context
 
-PINNED_DMA
-    │
-    └── Pinned host memory + DMA-oriented transfers
+RAM
+    ↓
+warm context
 
-GPU_DIRECT
-    │
-    └── Direct GPU/NVMe path where supported
+NVMe SSD
+    ↓
+cold / overflow context
 ```
 
-The code also performs drive discovery and validation.
+This is especially useful for local systems where GPU memory is the
+primary constraint.
 
-It can identify:
+------------------------------------------------------------------------
 
-- device
-- mount path
-- filesystem
-- total capacity
-- free capacity
-- SSD status
+# 7. TurboQuant
 
----
+NEXUS integrates TurboQuant-based KV compression.
 
-# 10. KV State Persistence
+Configuration supports different compression levels, including:
 
-The tiered KV manager provides state persistence:
-
-```text
-KV cache
-   │
-   ├── Block metadata
-   ├── SSD slot allocation
-   └── Token signatures
-           │
-           ▼
-       metadata file
-```
-
-The manager exposes:
-
-```cpp
-save_state()
-load_state()
-```
-
-This allows the storage metadata to survive beyond a single in-memory manager lifetime.
-
----
-
-# 11. TurboQuant Integration
-
-NEXUS also integrates TurboQuant-oriented KV compression.
-
-Relevant components include:
-
-```text
-src/llama-turboquant.cpp
-src/llama-turboquant.h
-```
-
-The tiered manager accepts separate compression modes for:
-
-```text
-K cache
-V cache
-```
-
-For example:
-
-```text
-K → Turbo4
-V → Turbo2
-```
-
-The code therefore supports asymmetric K/V compression.
-
-Conceptually:
-
-```text
-                 KV Cache
-                    │
-          ┌─────────┴─────────┐
-          │                   │
-          ▼                   ▼
-       K Cache             V Cache
-          │                   │
-          ▼                   ▼
-      TurboQuant          TurboQuant
-       setting              setting
-          │                   │
-          ▼                   ▼
-       Storage             Storage
-```
-
-The CLI exposes:
-
-```text
---turboquant-k
---turboquant-v
-```
-
-with supported levels including:
-
-```text
+``` text
 turbo4
 turbo3
 turbo2
 none
 ```
 
----
+The purpose is to reduce KV memory requirements while allowing larger
+effective contexts.
 
-# 12. Why KV Compression and SSD Tiering Are Combined
+The exact memory/performance tradeoff depends on the model, hardware,
+context size, and compression level.
 
-The architecture effectively creates two independent ways of extending usable KV capacity:
+------------------------------------------------------------------------
 
-```text
-             KV Cache
-                │
-       ┌────────┴────────┐
-       │                 │
-       ▼                 ▼
- Compression          Tiering
-       │                 │
-       ▼                 ▼
-Fewer bytes/token   More storage capacity
-       │                 │
-       └────────┬────────┘
-                ▼
-        Larger practical
-         memory capacity
-```
+# 8. Swarm Discovery
 
-TurboQuant reduces the amount of memory required per KV element.
+NEXUS supports node discovery through its swarm infrastructure.
 
-SSD tiering allows cold blocks to leave RAM entirely.
+The C++ server layer contains:
 
----
-
-# 13. Important KV-Cache Configuration
-
-The common argument parser adds options including:
-
-```text
---kv-swap-path
---kv-swap-drive
---kv-swap-size
---kv-swap-ram
---turboquant-k
---turboquant-v
-```
-
-The system also contains block-size and engine configuration.
-
-When SSD KV swapping is active, GPU KV offloading is disabled in the relevant configuration path so the tiered manager can manage the KV data from host memory.
-
-Conceptually:
-
-```text
-Normal configuration:
-
-GPU
-└── Model + KV Cache
-
-
-SSD KV mode:
-
-GPU
-└── Model
-    │
-    └── Attention operations
-
-RAM
-└── Hot/Warm KV
-
-SSD
-└── Cold KV
-```
-
----
-
-# 14. Context-Length Safety
-
-One important modification addresses automatic context sizing.
-
-A naive calculation based only on:
-
-```text
-SSD capacity + RAM capacity
-```
-
-could produce a context size much larger than the model's trained context.
-
-For example:
-
-```text
-Available KV storage
-        ↓
-Calculated n_ctx
-        ↓
-Hundreds of thousands of tokens
-        ↓
-GPU compute buffers sized for enormous context
-        ↓
-OOM / allocation failure
-```
-
-NEXUS caps automatically calculated context size against the model's training context.
-
-Conceptually:
-
-```text
-n_ctx_auto
-     │
-     ▼
-Compare with n_ctx_train
-     │
-     ▼
-min(n_ctx_auto, n_ctx_train)
-```
-
-This separates:
-
-```text
-larger storage capacity
-```
-
-from:
-
-```text
-larger model-native context length
-```
-
----
-
-# 15. llama-server
-
-The server layer is located primarily under:
-
-```text
-tools/server/
-```
-
-Important components include:
-
-```text
-server.cpp
-server-context.cpp
-server-task.cpp
-server-queue.cpp
-server-stream.cpp
-server-models.cpp
-server-tools.cpp
-server-mcp.cpp
+``` text
 server-swarm.cpp
+server-swarm.h
 ```
 
-The server provides:
+The Python cluster layer contains:
 
-- HTTP API
-- OpenAI-compatible chat completions
-- request processing
-- batching
-- streaming
-- model management
-- tool calling
-- MCP support
-- embeddings/reranking-related APIs
-- cluster/swarm functionality
-
----
-
-# 16. Server Request Flow
-
-A typical request follows:
-
-```text
-Client
-  │
-  ▼
-HTTP API
-  │
-  ▼
-Server HTTP Layer
-  │
-  ▼
-Task / Request Queue
-  │
-  ▼
-Server Context
-  │
-  ▼
-Batch Construction
-  │
-  ▼
-llama_context
-  │
-  ▼
-KV Cache
-  │
-  ▼
-GGML Graph
-  │
-  ▼
-CPU / GPU Backend
-  │
-  ▼
-Generated Tokens
-  │
-  ▼
-Streaming / JSON Response
+``` text
+cluster/discovery.py
+cluster/cluster_daemon.py
 ```
 
----
+The discovery system can identify available nodes and collect
+information required for cluster coordination.
 
-# 17. Server Slots
+The architecture also includes authenticated beacon support using:
 
-The server maintains independent request slots with states such as:
-
-```text
-IDLE
-  ↓
-WAIT_OTHER
-  ↓
-STARTED
-  ↓
-PROCESSING_PROMPT
-  ↓
-DONE_PROMPT
-  ↓
-GENERATING
+``` text
+HMAC-SHA256
+timestamp validation
+SWARM_BEACON_KEY
 ```
 
-This enables multiple requests to share the model context infrastructure.
+This provides a foundation for preventing unauthenticated nodes from
+being blindly trusted on the local network.
 
-The KV-cache extensions integrate into this slot/sequence architecture.
+------------------------------------------------------------------------
 
----
+# 9. Workspace Security
 
-# 18. Native C++ Swarm Layer
+NEXUS includes workspace-scoped access control.
 
-NEXUS contains a C++ swarm implementation:
+A workspace can define allowed roots:
 
-```text
-tools/server/server-swarm.h
-tools/server/server-swarm.cpp
+``` text
+/home/user/project
+/home/user/project/src
 ```
 
-The main abstraction is:
+Operations can be checked against these roots before files are ingested
+or accessed.
 
-```cpp
-SwarmNode
+Conceptually:
+
+``` text
+AI request
+    ↓
+WorkspaceScope
+    ↓
+Allowed?
+ ┌──┴──┐
+YES    NO
+ │      │
+ ▼      ▼
+Allow   Reject
+        HTTP 403
 ```
 
-Each node advertises:
+This is important when agents are given access to filesystem tools.
 
-```text
-node_id
-IP
-HTTP port
-role
-model
+------------------------------------------------------------------------
+
+# 10. SwarmCode
+
+SwarmCode is the VS Code fork that acts as the **native control surface
+for NEXUS**.
+
+Instead of treating AI as a separate web application or external panel,
+SwarmCode integrates NEXUS into the VS Code workbench.
+
+The target architecture is:
+
+``` text
+SwarmCode
+│
+├── Editor
+├── Explorer
+├── Terminal
+├── Git
+├── Debugger
+├── Diagnostics
+│
+└── NEXUS Workbench
+      │
+      ├── Cluster
+      ├── Agents
+      ├── Tasks
+      ├── Context
+      ├── Memory
+      ├── Infrastructure
+      └── File Changes
 ```
 
-The C++ implementation uses UDP multicast discovery.
+------------------------------------------------------------------------
 
-The discovery group is:
+# 11. Native SwarmCode Workbench
 
-```text
-224.0.0.111
+The native VS Code integration includes:
+
+``` text
+src/vs/workbench/contrib/swarmcode/
 ```
 
-and the discovery port is:
+with components such as:
 
-```text
-52415
+``` text
+common/swarmcode.ts
+browser/swarmcodeService.ts
+browser/swarmcodeViewPane.ts
+browser/swarmcode.contribution.ts
 ```
 
-The beacon contains a structure conceptually similar to:
+The service layer provides a separation between the workbench UI and
+NEXUS communication.
 
-```json
-{
-  "magic": "SWARM",
-  "node_id": "...",
-  "role": "...",
-  "port": 8080,
-  "model": "..."
-}
+Important events include:
+
+``` text
+onDidDiscoverNode
+onDidUpdateCluster
+onDidUpdateTranscript
+onDidGeneratePlan
 ```
 
----
+This provides a foundation for real-time multi-agent UI updates.
 
-# 19. Python Cluster Architecture
+------------------------------------------------------------------------
 
-The repository also contains a higher-level Python cluster subsystem:
+# 12. SwarmCode NEXUS Integration
 
-```text
-cluster/
+The integration layer includes:
+
+``` text
+extensions/swarmcode/
+├── nexusClient.ts
+├── contextEngine.ts
+├── toolGateway.ts
+├── taskManager.ts
+├── gitBridge.ts
+├── discovery/
+├── orchestrator/
+└── views/
 ```
 
 The major components are:
 
-```text
-discovery.py
-node_config.py
-cluster_server.py
-agent_server.py
-cluster_daemon.py
-consensus_engine.py
+### NexusClient
+
+Communicates with NEXUS services.
+
+### ContextEngine
+
+Builds development context from the IDE.
+
+### ToolGateway
+
+Provides controlled access to IDE tools.
+
+### TaskManager
+
+Tracks AI development tasks and their lifecycle.
+
+### GitBridge
+
+Connects NEXUS with VS Code's Git functionality.
+
+### Cluster Client
+
+Discovers and monitors NEXUS nodes.
+
+### Swarm Orchestrator
+
+Coordinates multi-model tasks.
+
+------------------------------------------------------------------------
+
+# 13. IDE-Aware Context Engine
+
+SwarmCode can construct context from the actual development environment.
+
+Possible context sources include:
+
+``` text
+Active editor
+Selection
+Open editors
+Workspace files
+Related files
+Imports
+Exports
+Diagnostics
+Git changes
+Current branch
+Modified files
+Project information
 ```
 
----
+The intended flow is:
 
-# 20. Node Discovery
-
-`cluster/discovery.py` implements automatic heterogeneous-node discovery.
-
-Each node advertises information including:
-
-```text
-Node ID
-Hostname
-API address
-API port
-Model name
-Role
-VRAM
-RAM
-SSD swap capacity
-Maximum context
-Tags
+``` text
+User request
+     ↓
+Context Engine
+     │
+     ├── Active file
+     ├── Selection
+     ├── Related files
+     ├── Diagnostics
+     ├── Git diff
+     └── Workspace
+            ↓
+       Relevant context
+            ↓
+          NEXUS
 ```
 
-Discovery uses:
+This avoids unnecessarily sending the entire repository to every model.
 
-```text
-UDP multicast
-UDP broadcast
+------------------------------------------------------------------------
+
+# 14. Tool Gateway
+
+The Tool Gateway provides a controlled boundary between AI agents and
+the IDE.
+
+Examples of tools include:
+
+``` text
+read_file
+write_file
+search_files
+run_command
+run_tests
+get_diagnostics
+git_diff
+open_file
 ```
 
-The primary multicast endpoint is:
+The intended security boundary is:
 
-```text
-224.0.0.111:52415
+``` text
+AI Model
+   │
+   │ Tool Request
+   ▼
+Tool Gateway
+   │
+   ├── Filesystem
+   ├── Git
+   ├── Terminal
+   ├── Diagnostics
+   └── VS Code APIs
 ```
 
-Nodes periodically send heartbeats.
+Models should not receive unrestricted access to the host operating
+system.
 
-A peer is considered inactive after its configured timeout.
+------------------------------------------------------------------------
 
----
+# 15. Task System
 
-# 21. Node Identity
+NEXUS/SwarmCode introduces a task abstraction represented by concepts
+such as:
 
-The node configuration layer can probe the local llama-compatible backend.
-
-It checks endpoints such as:
-
-```text
-/health
-/props
-/v1/models
+``` text
+NexusTask
 ```
 
-This allows the cluster node to determine which model the backend is actually serving.
+A task can contain:
 
-The advertised node therefore contains information such as:
-
-```text
-Hostname
-Model
-Backend URL
-Context size
-Role
-Memory capacity
+``` text
+id
+type
+goal
+workspace
+files
+agents
+context
+approvalRequired
 ```
 
----
+Supported task categories include:
 
-# 22. Workspace Security Boundary
-
-NEXUS contains a workspace-scope mechanism.
-
-A user can grant specific folders:
-
-```text
-Workspace
-├── project-a/
-├── project-b/
-└── ...
+``` text
+implement
+fix
+refactor
+explain
+review
+generate_tests
+security_review
+consensus
 ```
 
-The scope system normalizes paths and checks whether ingested files fall inside the allowed roots.
+A task can progress through states such as:
 
-Conceptually:
-
-```text
-User grants:
-
-/home/user/projects/my-app
-
-             │
-             ▼
-
-       WorkspaceScope
-             │
-      ┌──────┴──────┐
-      │             │
- inside scope   outside scope
-      │             │
-      ▼             ▼
-   accepted       rejected
+``` text
+planning
+architecture
+implementation
+testing
+security_review
+consensus
+awaiting_approval
+applied
+rejected
+failed
 ```
 
-Out-of-scope ingestion requests are rejected with HTTP `403`.
+------------------------------------------------------------------------
 
-This creates an explicit boundary around which workspace files may be provided to the model cluster.
+# 16. Agent Event System
 
----
+The SwarmCode UI can represent events from individual model nodes.
 
-# 23. Project Context
+Examples include:
 
-The cluster server maintains an active project context consisting primarily of:
-
-```json
-{
-  "summary": "...",
-  "files": []
-}
+``` text
+NODE_STARTED
+NODE_THINKING
+NODE_TOOL_CALL
+NODE_FILE_READ
+NODE_FILE_WRITE
+NODE_RESPONSE
+NODE_REVIEW
+NODE_APPROVED
+NODE_REJECTED
+TASK_COMPLETED
+TASK_FAILED
+DIFF_PROPOSED
 ```
 
-The context can be:
+This allows the UI to show what the multi-model team is doing rather
+than displaying only a final response.
 
-```text
-Ingested
-   ↓
-Validated against workspace scope
-   ↓
-Stored as active project context
-   ↓
-Provided to collaborative model calls
+Example:
+
+``` text
+Architect
+DeepSeek
+● reasoning
+
+Coder
+Qwen
+● editing src/auth/
+
+Security
+Llama
+✓ approved
+
+Tester
+Model X
+● running tests
 ```
 
----
+------------------------------------------------------------------------
 
-# 24. Multi-Model Consensus Engine
+# 17. Safe Code Changes
 
-The central collaborative component is:
+AI-generated changes are designed to go through a proposal and approval
+flow.
 
-```text
-cluster/consensus_engine.py
+``` text
+AI
+ ↓
+Diff Proposal
+ ↓
+VS Code Diff
+ ↓
+User Review
+ ┌──────────────┐
+ ▼              ▼
+Accept         Reject
+ │
+ ▼
+Apply change
 ```
 
-Its main abstraction is:
+A proposal can retain the original file content so that the system can
+detect whether the file changed between proposal creation and approval.
 
-```python
-MultiModelConsensusEngine
+This helps avoid blindly overwriting newer user edits.
+
+------------------------------------------------------------------------
+
+# 18. Diagnostics Integration
+
+SwarmCode can connect compiler/linter diagnostics with NEXUS.
+
+Example:
+
+``` text
+Compilation Error
+       ↓
+VS Code Diagnostic
+       ↓
+NEXUS
+       ↓
+Debugging Model
+       ↓
+Fix Proposal
+       ↓
+Diff Review
 ```
 
-The architecture is iterative rather than simply asking one model for an answer.
+This enables an agent workflow driven directly by errors in the editor.
 
-```text
-                    User Task
-                       │
-                       ▼
-                Project Context
-                       │
-                       ▼
-              ┌─────────────────┐
-              │ Active AI Nodes │
-              └────────┬────────┘
-                       │
-          ┌────────────┼────────────┐
-          ▼            ▼            ▼
-       Model A       Model B      Model C
-          │            │            │
-          └────────────┼────────────┘
-                       ▼
-                 Initial Proposals
-                       │
-                       ▼
-               Cross Verification
-                       │
-             ┌─────────┴─────────┐
-             │                   │
-          Problems             Approved
-             │                   │
-             ▼                   ▼
-       Revision/Synthesis       Finish
-             │
-             ▼
-        Verify Again
-             │
-             └───────────►
+------------------------------------------------------------------------
+
+# 19. Git Integration
+
+The Git bridge provides development state such as:
+
+``` text
+Current branch
+Working-tree diff
+Staged diff
+Modified files
 ```
 
----
-
-# 25. Consensus Pipeline
-
-The implemented consensus process has three major stages.
-
-## Stage 1 — Proposal
-
-Every active node is asked to analyze the project and produce a proposal.
-
-Each model can receive role-specific instructions.
+This gives agents additional information about what the developer is
+currently changing.
 
 For example:
 
-```text
-Node A
-Role: Coder
-
-Node B
-Role: Architect
-
-Node C
-Role: Reviewer
-
-Node D
-Role: Security
-```
-
-Each contributes independently.
-
----
-
-## Stage 2 — Cross Verification
-
-The generated proposal is sent to the participating models for review.
-
-Reviewers are asked to identify:
-
-```text
-Bugs
-Syntax problems
-Edge cases
-Regressions
-Architectural flaws
-```
-
-Each reviewer returns an approval status and issues/corrections.
-
-The engine treats malformed or ambiguous review responses conservatively rather than automatically considering them approved.
-
----
-
-## Stage 3 — Revision
-
-If any reviewer rejects the proposal:
-
-```text
-Proposal
-   │
-   ▼
-Reviewer feedback
-   │
-   ▼
-Lead Architect
-   │
-   ▼
-Revised proposal
-   │
-   ▼
-New verification round
-```
-
-The current implementation permits up to:
-
-```text
-4 verification rounds
-```
-
-If all reviewers approve, the result is marked:
-
-```text
-APPROVED_BY_CLUSTER
-```
-
-If verification rounds are exhausted while objections remain, the result is:
-
-```text
-NEEDS_REVIEW
-```
-
-This distinction is important: the implementation does not treat an exhausted verification loop as successful consensus.
-
----
-
-# 26. Consensus Output
-
-The resulting plan contains information such as:
-
-```text
-Title
-Status
-Participating nodes
-Models
-Memory information
-Verification rounds
-Discussion transcript
-Tasks
-```
-
-The generated task structure associates tasks with participating nodes/models.
-
----
-
-# 27. Agent Server
-
-`cluster/agent_server.py` provides a FastAPI-based agent interface.
-
-Important endpoints include:
-
-```text
-GET  /v1/node/info
-GET  /v1/cluster/peers
-
-POST /v1/agent/discuss
-POST /v1/chat/completions
-POST /v1/agent/plan
-
-WS   /v1/cluster/stream
-```
-
-The agent server can proxy chat requests toward the local llama backend while exposing higher-level collaborative operations.
-
----
-
-# 28. Cluster Server API
-
-The native Python cluster service exposes the host API described by:
-
-```text
-cluster/HOST_API.md
-```
-
-Important endpoints include:
-
-```text
-GET  /v1/node/info
-GET  /v1/node/status
-
-GET  /v1/cluster/peers
-GET  /v1/cluster/topology
-GET  /v1/cluster/context
-GET  /v1/cluster/scope
-
-POST /v1/cluster/scope
-POST /v1/cluster/ingest
-
-POST /v1/cluster/collaborate
-POST /v1/cluster/discuss
-```
-
----
-
-# 29. Cluster Topology
-
-A topology response combines:
-
-```text
-Local node
-    +
-Backend information
-    +
-Discovered nodes
-    +
-Workspace scope
-```
-
-This provides a host application with a complete view of the current NEXUS environment.
-
----
-
-# 30. Host API Architecture
-
-The intended host integration is explicitly separated from the cluster service.
-
-```text
-┌───────────────────────────┐
-│        Host / IDE         │
-│                           │
-│  UI / panels / controls   │
-└─────────────┬─────────────┘
-              │
-              │ swarm-host/1
-              ▼
-┌───────────────────────────┐
-│     NEXUS Cluster API     │
-│                           │
-│  topology                 │
-│  peers                    │
-│  scope                    │
-│  ingest                   │
-│  collaborate              │
-└─────────────┬─────────────┘
-              │
-              ▼
-       AI model nodes
-```
-
-The cluster service acts as the source of truth for cluster state.
-
----
-
-# 31. Web UI
-
-The repository contains a substantial Svelte-based UI under:
-
-```text
-tools/ui/src/
-```
-
-The UI includes components for:
-
-```text
-Chat
-├── Messages
-├── Input
-├── Attachments
-├── Tools
-├── MCP resources
-├── Model selection
-├── Context gauge
-└── Working directory
-
-Settings
-├── Model configuration
-├── KV swap configuration
-├── TurboQuant configuration
-└── Other inference parameters
-```
-
-The UI communicates with the server API rather than directly implementing inference.
-
----
-
-# 32. KV Settings in the UI
-
-The UI has explicit configuration support for the NEXUS KV extensions.
-
-Relevant settings include:
-
-```text
-KV swap drive
-KV swap SSD size
-KV swap RAM size
-KV swap block size
-KV swap engine
-TurboQuant K
-TurboQuant V
-```
-
-The settings store can synchronize these values to the server.
-
----
-
-# 33. Complete End-to-End Request
-
-A collaborative coding request can conceptually travel through NEXUS like this:
-
-```text
-User
- │
- ▼
-NEXUS Host / UI
- │
- │ project files
- │ task
- ▼
-Workspace Scope
- │
- ▼
-Project Context
- │
- ▼
-Cluster Discovery
- │
- ├───────────────┐
- ▼               ▼
-Node A          Node B
-Model A         Model B
- │               │
- └──────┬────────┘
-        ▼
-  Initial proposals
-        │
-        ▼
- Cross-model review
-        │
-        ▼
-  Revision loop
-        │
-        ▼
- Cluster result
-        │
-        ▼
- Host / UI
-        │
-        ▼
- User
-```
-
----
-
-# 34. Inference + Tiered Memory Flow
-
-For a normal inference request:
-
-```text
-Prompt
-  │
-  ▼
-llama-server
-  │
-  ▼
-llama_context
-  │
-  ▼
-KV cache
-  │
-  ├── HOT
-  │    GPU / active memory
-  │
-  ├── WARM
-  │    RAM
-  │
-  └── COLD
-       SSD
-        │
-        ▼
-    KV recall
-        │
-        ▼
-     Attention
-        │
-        ▼
-    Next token
-```
-
----
-
-# 35. Multi-Node + Tiered Memory
-
-The larger NEXUS architecture combines the two systems:
-
-```text
-                     NEXUS
-                       │
-            ┌──────────┴──────────┐
-            │                     │
-       Distributed            Tiered Memory
-        Intelligence                │
-            │                 ┌─────┼─────┐
-            │                 ▼     ▼     ▼
-            │                VRAM  RAM   SSD
-            │
-     ┌──────┼──────────────┐
-     │      │              │
-     ▼      ▼              ▼
-   Node A  Node B        Node C
-   Model A Model B       Model C
-     │      │              │
-     └──────┼──────────────┘
-            ▼
-       Consensus Engine
-            │
-            ▼
-       Unified Result
-```
-
-This is the central architectural idea of NEXUS.
-
----
-
-# 36. TurboQuant Research Subsystem
-
-The repository also contains:
-
-```text
-turboquant_plus-main/
-```
-
-This is a research-oriented implementation and experimentation area.
-
-It contains:
-
-```text
-benchmarks/
-docs/
-tests/
-research papers/
-experiments/
-```
-
-The research architecture combines:
-
-```text
-PolarQuant
-     +
-Walsh-Hadamard / random rotation
-     +
-QJL / residual quantization
-     ↓
-Compressed KV representation
-```
-
-The research directory is more experimental than the production inference path.
-
----
-
-# 37. Hardware Abstraction
-
-Because NEXUS inherits the GGML/llama.cpp architecture, computation can be dispatched to different backends.
-
-The repository contains support/configuration for several backends, including:
-
-```text
-CPU
-CUDA
-Metal
-Vulkan
-HIP
-SYCL
-OpenCL
-BLAS
-CANN
-MUSA
-OpenVINO
-ZenDNN
-zDNN
-```
-
-Therefore the architecture is approximately:
-
-```text
-                llama.cpp
-                    │
-                  GGML
-                    │
-       ┌────────────┼────────────┐
-       ▼            ▼            ▼
-      CPU          CUDA        Metal
-       │            │            │
-       ▼            ▼            ▼
-     x86/ARM      NVIDIA      Apple
-```
-
----
-
-# 38. Build System
-
-The primary build system is CMake.
-
-Important files include:
-
-```text
-CMakeLists.txt
-CMakePresets.json
-Makefile
-```
-
-The server target incorporates the swarm source:
-
-```text
-tools/server/server-swarm.cpp
-```
-
-The inference library incorporates:
-
-```text
-src/llama-kv-swap.cpp
-src/llama-turboquant.cpp
-```
-
----
-
-# 39. Example Node Configuration
-
-The repository provides:
-
-```text
-cluster/config.example.json
-```
-
-A node can specify:
-
-```json
-{
-  "node_role": "coder",
-  "node_model": "Qwen-2.5-Coder-32B",
-  "http_port": 8000,
-  "llama_server_path": "../build/bin/llama-server",
-  "llama_model_path": "../../models/qwen2.5-coder-32b-q4_k_m.gguf",
-  "tiered_cache": {
-    "ssd_enabled": true,
-    "ram_enabled": true,
-    "nvme_path": "/mnt/nvme0n1/llama_cache"
-  }
-}
-```
-
-This represents the intended relationship between:
-
-```text
-Node
- ├── Role
- ├── Model
- ├── llama-server
- └── Tiered KV storage
-```
-
----
-
-# 40. Starting a Cluster Node
-
-The repository contains:
-
-```text
-cluster/start_node.sh
-```
-
-The script supports modes including:
-
-```text
-agent
-cluster
-```
-
-Relevant environment variables include:
-
-```text
-SWARM_MODE
-SWARM_ROLE
-SWARM_MODEL
-SWARM_PORT
-SWARM_BACKEND_URL
-```
-
-A typical architecture is:
-
-```text
-start_node.sh
-       │
-       ▼
-Python cluster service
-       │
-       ▼
-Local llama-server
-       │
-       ▼
-Local model
-```
-
----
-
-# 41. Security Model
-
-The repository includes several useful security boundaries, particularly around workspace access.
-
-The main principle is:
-
-```text
-User explicitly grants workspace
-            │
-            ▼
-       Scope checker
-            │
-       ┌────┴────┐
-       ▼         ▼
-    allowed    rejected
-       │
-       ▼
- Project context
-```
-
-The cluster API also exposes CORS headers and proxies requests to the local llama backend.
-
-For production/networked deployment, authentication, authorization, encryption, and stronger node authentication should be treated as separate deployment concerns.
-
----
-
-# 42. Important Architectural Distinction
-
-NEXUS contains **two related swarm/discovery implementations**:
-
-### C++ server swarm
-
-```text
-tools/server/server-swarm.*
-```
-
-This is integrated into the llama server side and provides lightweight UDP-based peer discovery.
-
-### Python cluster system
-
-```text
-cluster/
-```
-
-This provides the higher-level functionality:
-
-```text
-Node configuration
-Discovery
-Workspace scope
-Project ingestion
-Agent API
+``` text
+Developer asks:
+"Review my current changes"
+
+        ↓
+
+GitBridge
+        ↓
+Working-tree diff
+        ↓
+ContextEngine
+        ↓
+Review models
+        ↓
 Consensus
-Planning
 ```
 
-They should not be interpreted as identical layers.
+------------------------------------------------------------------------
 
-The Python subsystem currently provides the richer multi-model orchestration functionality.
+# 20. MCP Integration
 
----
+NEXUS contains MCP-related server functionality and can be extended with
+external tools.
 
-# 43. Data Ownership
+The preferred architecture is:
 
-A simplified ownership model is:
-
-```text
-GGML
-└── Tensor computation
-
-llama.cpp
-└── Model / context / KV cache
-
-NEXUS KV layer
-└── Tiered KV storage and compression
-
-llama-server
-└── API / scheduling / inference requests
-
-Cluster layer
-└── Nodes / workspace / collaboration
-
-UI / Host
-└── User interaction
+``` text
+Model
+  ↓
+NEXUS Tool Gateway
+  ↓
+MCP / IDE / Local tools
 ```
 
-This separation is important when extending the system.
+rather than independently giving every model direct access to every
+tool.
 
----
+This provides one place to enforce permissions, logging, and workspace
+restrictions.
 
-# 44. Where to Modify the Project
+------------------------------------------------------------------------
 
-## Add or modify KV-cache behavior
+# 21. Infrastructure Visibility
 
-Start with:
+Because NEXUS is designed for local heterogeneous hardware, SwarmCode
+can expose infrastructure information such as:
 
-```text
-src/llama-kv-cache.cpp
-src/llama-kv-cache.h
-src/llama-kv-swap.cpp
-src/llama-kv-swap.h
+``` text
+Node
+Model
+VRAM
+RAM
+SSD
+Context
+KV usage
+Backend
+Status
+Capabilities
 ```
 
-## Modify TurboQuant
+Example:
 
-Look at:
-
-```text
-src/llama-turboquant.cpp
-src/llama-turboquant.h
-turboquant_plus-main/
+``` text
+┌───────────────────────────────────┐
+│ NEXUS CLUSTER                     │
+├───────────────────────────────────┤
+│ Node 01  Qwen Coder    ONLINE     │
+│ Node 02  DeepSeek      ONLINE     │
+│ Node 03  Llama         ONLINE     │
+│ Node 04  Security      OFFLINE    │
+└───────────────────────────────────┘
 ```
 
-## Add CLI configuration
+------------------------------------------------------------------------
 
-Modify:
+# 22. Example Development Workflow
 
-```text
-common/arg.cpp
+A complete future workflow can look like:
+
+``` text
+1. Developer asks:
+   "Add authentication to this project."
+
+2. SwarmCode collects:
+   - active file
+   - project structure
+   - related files
+   - Git changes
+   - diagnostics
+
+3. NEXUS creates a task.
+
+4. Architect model creates an implementation plan.
+
+5. Coding model implements the changes.
+
+6. Testing model creates/runs tests.
+
+7. Security model reviews authentication.
+
+8. Reviewer models inspect the implementation.
+
+9. NEXUS performs cross-model verification.
+
+10. SwarmCode displays proposed changes.
+
+11. Developer reviews the VS Code diff.
+
+12. Developer accepts or rejects.
+
+13. Tests and diagnostics are checked again.
 ```
 
-## Modify server behavior
+------------------------------------------------------------------------
 
-Look at:
+# 23. Example Heterogeneous Cluster
 
-```text
-tools/server/server.cpp
-tools/server/server-context.cpp
-tools/server/server-task.cpp
+A possible local cluster could look like:
+
+``` text
+Laptop / PC 01
+├── Model: Qwen Coder
+├── Role: Coding
+└── GPU: local GPU
+
+Laptop / PC 02
+├── Model: DeepSeek
+├── Role: Reasoning
+└── GPU: local GPU
+
+Laptop / PC 03
+├── Model: Llama
+├── Role: Review
+└── GPU: local GPU
+
+Laptop / PC 04
+├── Model: Small fast model
+├── Role: Utility / classification
+└── GPU / CPU
 ```
 
-## Modify cluster discovery
+NEXUS treats them as one logical intelligence network:
 
-Look at:
-
-```text
-cluster/discovery.py
-cluster/node_config.py
+``` text
+             ┌───────────────┐
+             │   SwarmCode   │
+             └───────┬───────┘
+                     │
+              NEXUS Router
+                     │
+        ┌────────────┼────────────┐
+        ▼            ▼            ▼
+      Qwen        DeepSeek      Llama
+      Coder       Reasoner      Reviewer
+        │            │            │
+        └────────────┼────────────┘
+                     ▼
+                 Consensus
 ```
 
-and the C++ implementation:
+------------------------------------------------------------------------
 
-```text
-tools/server/server-swarm.cpp
+# 24. Security Model
+
+The architecture should treat every AI action as potentially untrusted.
+
+Important boundaries include:
+
+-   Workspace scope validation
+-   Tool Gateway
+-   User approval for code changes
+-   Authenticated swarm discovery
+-   Node availability checks
+-   Model/backend health checks
+-   Git-aware change tracking
+-   Diff-based file modifications
+-   No automatic approval on timeout/failure
+
+For production use, additional authentication, authorization,
+sandboxing, process isolation, and audit logging should be added around
+command execution.
+
+------------------------------------------------------------------------
+
+# 25. Current Architecture Status
+
+The current project contains substantial implementations for:
+
+  Component                                 Status
+  ----------------------------------------- ----------------
+  `llama.cpp` inference base                Implemented
+  VRAM/RAM/SSD KV hierarchy                 Implemented
+  TurboQuant integration                    Implemented
+  Heterogeneous model nodes                 Implemented
+  Node discovery                            Implemented
+  Backend/model probing                     Implemented
+  Workspace scope                           Implemented
+  Multi-agent coordination                  Implemented
+  Consensus engine                          Implemented
+  Cross-model verification                  Implemented
+  Native SwarmCode workbench                Implemented
+  Context engine                            Implemented
+  Tool Gateway foundation                   Implemented
+  Git integration                           Implemented
+  Diagnostics integration                   Implemented
+  Task abstraction                          Implemented
+  Diff/approval flow                        Implemented
+  Agent event model                         Implemented
+  Full autonomous tool execution loop       In development
+  Complete native/extension consolidation   In development
+  Capability-based dynamic routing          In development
+  End-to-end autonomous coding loop         In development
+
+The project is therefore best considered an **active development
+platform**, not a finished autonomous coding product.
+
+------------------------------------------------------------------------
+
+# 26. Recommended Next Architecture
+
+The next major development stage should connect the existing components
+into one complete execution loop:
+
+``` text
+                  User
+                   │
+                   ▼
+               SwarmCode
+                   │
+                   ▼
+             Context Engine
+                   │
+                   ▼
+               NexusTask
+                   │
+                   ▼
+             Agent Router
+                   │
+       ┌───────────┼───────────┐
+       ▼           ▼           ▼
+    Model A      Model B      Model C
+    Architect    Coder        Reviewer
+       │           │           │
+       └───────────┼───────────┘
+                   ▼
+              Tool Gateway
+                   │
+          ┌────────┼─────────┐
+          ▼        ▼         ▼
+       Files      Git      Terminal
+          │        │         │
+          └────────┼─────────┘
+                   ▼
+              Test / Debug
+                   │
+                   ▼
+             Review Models
+                   │
+                   ▼
+               Consensus
+                   │
+                   ▼
+              Diff Proposal
+                   │
+                   ▼
+              User Approval
+                   │
+                   ▼
+               Apply Code
+                   │
+                   ▼
+            Verify Again
 ```
 
-## Modify multi-model reasoning
+This turns the current components into a complete agentic development
+loop.
 
-Start with:
+------------------------------------------------------------------------
 
-```text
-cluster/consensus_engine.py
+# 27. Design Philosophy
+
+NEXUS is built around five principles:
+
+### 1. Local-first
+
+Models and project data can remain on local machines.
+
+### 2. Heterogeneous
+
+Different nodes can run different models and specialize in different
+tasks.
+
+### 3. Resource-aware
+
+VRAM, RAM, and NVMe storage can all participate in context management.
+
+### 4. Human-controlled
+
+AI proposes changes; the developer remains in control of applying them.
+
+### 5. IDE-native
+
+The intelligence layer should be integrated into the development
+environment instead of being treated as a separate chatbot.
+
+------------------------------------------------------------------------
+
+# 28. Long-Term Vision
+
+The long-term goal is a distributed local AI development environment:
+
+``` text
+                         SWARMCODE
+                 AI-Native Development OS
+                            │
+                     NEXUS / MIND
+                            │
+               ┌────────────┴────────────┐
+               │                         │
+        Context + Tools             Agent Router
+               │                         │
+               └────────────┬────────────┘
+                            │
+                   Heterogeneous Swarm
+                            │
+       ┌────────────────────┼────────────────────┐
+       │                    │                    │
+    Coder Model        Reasoning Model       Review Model
+       │                    │                    │
+       └────────────────────┼────────────────────┘
+                            │
+                       Verification
+                            │
+                       Safe Changes
+                            │
+                         Developer
 ```
 
-## Modify host/agent API
+The objective is not simply to build another AI chat panel.
 
-Look at:
+The objective is to build a **local multi-model intelligence layer for
+software development**, where SwarmCode provides the developer interface
+and NEXUS provides the distributed intelligence, memory, orchestration,
+tools, and verification infrastructure.
 
-```text
-cluster/cluster_server.py
-cluster/agent_server.py
-cluster/HOST_API.md
+------------------------------------------------------------------------
+
+## Project Structure
+
+``` text
+MIND/
+├── common/
+├── include/
+├── src/
+├── ggml/
+├── tools/
+│   └── server/
+├── cluster/
+├── turboquant_plus-main/
+└── examples/
+
+SwarmCode/
+├── src/
+│   └── vs/workbench/contrib/swarmcode/
+├── extensions/
+│   └── swarmcode/
+│       ├── discovery/
+│       ├── orchestrator/
+│       └── views/
+└── ...
 ```
 
-## Modify UI
+------------------------------------------------------------------------
 
-Start under:
+## Status
 
-```text
-tools/ui/src/
-```
+🚧 **Active development**
 
----
+NEXUS and SwarmCode are evolving together. APIs, UI components,
+orchestration behavior, and cluster protocols may change as the platform
+moves toward a fully integrated multi-model coding workflow.
 
-# 45. Architectural Summary
-
-NEXUS can be summarized as:
-
-```text
-                  ┌─────────────────────┐
-                  │       USER          │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │    HOST / UI        │
-                  └──────────┬──────────┘
-                             │
-                             ▼
-                  ┌─────────────────────┐
-                  │  CLUSTER SERVICES    │
-                  │                     │
-                  │ Discovery           │
-                  │ Workspace Scope     │
-                  │ Project Context     │
-                  │ Consensus           │
-                  └──────────┬──────────┘
-                             │
-             ┌───────────────┼────────────────┐
-             │               │                │
-             ▼               ▼                ▼
-         AI Node A       AI Node B        AI Node C
-         Model A         Model B          Model C
-             │               │                │
-             ▼               ▼                ▼
-       ┌──────────────────────────────────────────┐
-       │              llama.cpp                   │
-       │                                          │
-       │ Model → Context → KV → GGML → Backend  │
-       └───────────────────┬──────────────────────┘
-                           │
-                           ▼
-                 ┌─────────────────────┐
-                 │   NEXUS KV Layer    │
-                 │                     │
-                 │  TurboQuant         │
-                 │       +             │
-                 │  LRU Tiering        │
-                 └─────────┬───────────┘
-                           │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-            VRAM          RAM          NVMe
-            HOT          WARM          COLD
-```
-
-## In one sentence
-
-**NEXUS extends llama.cpp into a local AI infrastructure where different models can operate as collaborative nodes while each inference engine uses compressed and tiered KV memory across GPU VRAM, system RAM, and NVMe storage.**
-
----
-
-# 46. Project Status Notes
-
-The repository combines multiple development layers:
-
-```text
-Stable/base infrastructure
-        │
-        ├── llama.cpp
-        ├── GGML
-        └── llama-server
-                 │
-                 ▼
-NEXUS extensions
-        │
-        ├── SSD KV swap
-        ├── Tiered memory
-        ├── TurboQuant integration
-        └── Swarm functionality
-                 │
-                 ▼
-Experimental / research
-        │
-        └── turboquant_plus-main
-```
-
-The architecture should therefore be treated as a **research/engineering fork with experimental components**, rather than assuming every subsystem has the same maturity or production-readiness.
-
----
-
-# 47. Recommended Development Order
-
-For developers entering the codebase, the most useful reading order is:
-
-```text
-1. README.md
-      ↓
-2. src/llama-context.*
-      ↓
-3. src/llama-kv-cache.*
-      ↓
-4. src/llama-kv-swap.*
-      ↓
-5. src/llama-turboquant.*
-      ↓
-6. tools/server/server-context.*
-      ↓
-7. tools/server/server.cpp
-      ↓
-8. cluster/discovery.py
-      ↓
-9. cluster/node_config.py
-      ↓
-10. cluster/consensus_engine.py
-      ↓
-11. cluster/cluster_server.py
-      ↓
-12. tools/ui/src/
-```
-
-This follows the architecture from:
-
-```text
-Inference core
-    ↓
-Memory subsystem
-    ↓
-Server
-    ↓
-Distributed intelligence
-    ↓
-User interface
-```
-
----
+------------------------------------------------------------------------
 
 ## License
 
-NEXUS is a modified fork of `llama.cpp`.
+See the individual project/license files included in the repository. The
+repository contains components derived from upstream projects with their
+own licensing requirements.
 
-The original `llama.cpp` project and its applicable components are distributed under the MIT License. Refer to the repository's `LICENSE`, `AUTHORS`, and third-party license files for the exact licensing and attribution requirements of the complete tree.
+------------------------------------------------------------------------
 
-Original project:
+## Vision
 
-https://github.com/ggml-org/llama.cpp
+> **One IDE. Multiple models. One intelligent development swarm.**
+
+NEXUS provides the distributed intelligence.
+
+SwarmCode provides the development environment.
+
+Together they form a local, heterogeneous, multi-agent AI coding
+platform.
