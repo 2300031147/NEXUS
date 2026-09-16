@@ -4,12 +4,20 @@ Implements auto-detection via UDP Multicast and Broadcast (compatible with exo n
 """
 
 import json
+import logging
 import socket
 import struct
 import threading
 import time
 import uuid
 from typing import Dict, Any, Callable, List, Optional
+
+try:
+    from node_config import beacon_key as get_beacon_key, sign_beacon, verify_beacon
+except ImportError:  # imported as part of the `cluster` package
+    from cluster.node_config import beacon_key as get_beacon_key, sign_beacon, verify_beacon
+
+logger = logging.getLogger("SwarmDiscovery")
 
 SWARM_MULTICAST_GROUP_V4 = "224.0.0.111"
 SWARM_DISCOVERY_PORT = 52415
@@ -78,11 +86,15 @@ class SwarmDiscovery:
         discovery_port: int = SWARM_DISCOVERY_PORT,
         on_peer_discovered: Optional[Callable[[SwarmNodeInfo], None]] = None,
         on_peer_lost: Optional[Callable[[str], None]] = None,
+        beacon_key: Optional[str] = None,
     ) -> None:
         self.node_info = node_info
         self.discovery_port = discovery_port
         self.on_peer_discovered = on_peer_discovered
         self.on_peer_lost = on_peer_lost
+        # Pre-shared beacon key (SWARM_BEACON_KEY env when omitted).
+        # Set → sign beacons and drop anything unverifiable.
+        self.beacon_key = beacon_key if beacon_key is not None else get_beacon_key()
         self.peers: Dict[str, SwarmNodeInfo] = {}
         self.running = False
         self.lock = threading.Lock()
@@ -155,6 +167,8 @@ class SwarmDiscovery:
                     "node": self.node_info.to_dict(),
                     "timestamp": time.time(),
                 }
+                if self.beacon_key:
+                    payload = sign_beacon(payload, self.beacon_key)
                 raw = json.dumps(payload).encode("utf-8")
                 
                 # Send to multicast group and subnet broadcast
@@ -187,52 +201,63 @@ class SwarmDiscovery:
                 if not data:
                     continue
                 parsed = json.loads(data.decode("utf-8"))
-                if parsed.get("magic") != SWARM_MAGIC.decode():
-                    continue
-                print(f"[Discovery] Received beacon from {addr}: {parsed}", flush=True)
-
-                peer_data = parsed.get("node", {})
-                peer_id = parsed.get("node_id") or peer_data.get("node_id")
-                if not peer_id or peer_id == self.node_info.node_id:
-                    continue
-
-                # If peer sent 127.0.0.1 or 0.0.0.0, use actual remote sender IP
-                peer_host = peer_data.get("api_host") or parsed.get("ip")
-                if not peer_host or peer_host == "0.0.0.0" or (peer_host == "127.0.0.1" and addr[0] not in ("127.0.0.1", "::1")):
-                    peer_host = addr[0]
-
-                # Reconstruct info
-                api_port = parsed.get("port") or peer_data.get("api_port", 8080)
-                model_name = parsed.get("model") or peer_data.get("model_name", "Unknown-Model")
-                role_desc = parsed.get("role") or peer_data.get("role_description", "Team Model")
-
-                peer = SwarmNodeInfo(
-                    node_id=peer_id,
-                    hostname=peer_data.get("hostname", "Unknown-Laptop"),
-                    api_host=peer_host,
-                    api_port=api_port,
-                    model_name=model_name,
-                    role_description=role_desc,
-                    vram_gb=peer_data.get("memory", {}).get("vram_gb", 0.0),
-                    ram_gb=peer_data.get("memory", {}).get("ram_gb", 0.0),
-                    ssd_swap_gb=peer_data.get("memory", {}).get("ssd_swap_gb", 0.0),
-                    max_context=peer_data.get("memory", {}).get("max_context", 32768),
-                    tags=peer_data.get("tags", []),
-                )
-                peer.last_seen = time.time()
-
-                is_new = False
-                with self.lock:
-                    if peer_id not in self.peers:
-                        is_new = True
-                    self.peers[peer_id] = peer
-
-                if is_new and self.on_peer_discovered:
-                    self.on_peer_discovered(peer)
-
+                self._process_payload(parsed, addr)
             except Exception:
                 if not self.running:
                     break
+
+    def _process_payload(self, parsed: Dict[str, Any], addr: Any) -> bool:
+        """Validate and record one decoded beacon. Returns True when accepted."""
+        try:
+            if parsed.get("magic") != SWARM_MAGIC.decode():
+                return False
+            ok, reason = verify_beacon(parsed, self.beacon_key)
+            if not ok:
+                logger.debug(f"[Discovery] Dropped beacon from {addr}: {reason}")
+                return False
+            logger.debug(f"[Discovery] Received beacon from {addr}: {parsed}")
+
+            peer_data = parsed.get("node", {})
+            peer_id = parsed.get("node_id") or peer_data.get("node_id")
+            if not peer_id or peer_id == self.node_info.node_id:
+                return False
+
+            # If peer sent 127.0.0.1 or 0.0.0.0, use actual remote sender IP
+            peer_host = peer_data.get("api_host") or parsed.get("ip")
+            if not peer_host or peer_host == "0.0.0.0" or (peer_host == "127.0.0.1" and addr[0] not in ("127.0.0.1", "::1")):
+                peer_host = addr[0]
+
+            # Reconstruct info
+            api_port = parsed.get("port") or peer_data.get("api_port", 8080)
+            model_name = parsed.get("model") or peer_data.get("model_name", "Unknown-Model")
+            role_desc = parsed.get("role") or peer_data.get("role_description", "Team Model")
+
+            peer = SwarmNodeInfo(
+                node_id=peer_id,
+                hostname=peer_data.get("hostname", "Unknown-Laptop"),
+                api_host=peer_host,
+                api_port=api_port,
+                model_name=model_name,
+                role_description=role_desc,
+                vram_gb=peer_data.get("memory", {}).get("vram_gb", 0.0),
+                ram_gb=peer_data.get("memory", {}).get("ram_gb", 0.0),
+                ssd_swap_gb=peer_data.get("memory", {}).get("ssd_swap_gb", 0.0),
+                max_context=peer_data.get("memory", {}).get("max_context", 32768),
+                tags=peer_data.get("tags", []),
+            )
+            peer.last_seen = time.time()
+
+            is_new = False
+            with self.lock:
+                if peer_id not in self.peers:
+                    is_new = True
+                self.peers[peer_id] = peer
+
+            if is_new and self.on_peer_discovered:
+                self.on_peer_discovered(peer)
+            return True
+        except Exception:
+            return False
 
     def _reaper_loop(self) -> None:
         while self.running:

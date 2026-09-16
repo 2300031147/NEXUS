@@ -297,14 +297,37 @@ export class NexusClient {
 
     /**
      * Submit a NexusTask to the cluster.
-     * Internally maps to /v1/cluster/collaborate with a structured prompt.
+     * Maps to /v1/cluster/collaborate, carrying the shared workspace
+     * context (project summary, selection, diagnostics, related files) so
+     * every model reasons over the same snapshot — capped to stay small.
      */
     public async submitTask(task: NexusTask): Promise<CollaborationResult> {
-        const goal = [
+        const lines = [
             `TASK [${task.type.toUpperCase()}]: ${task.goal}`,
             task.files.length ? `Files in scope: ${task.files.join(', ')}` : '',
             task.agents.length ? `Requested agents: ${task.agents.join(', ')}` : '',
-        ].filter(Boolean).join('\n');
-        return this.collaborate(goal);
+        ];
+        const ctx = task.context;
+        if (ctx) {
+            if (ctx.projectContext) {
+                lines.push(`Project context:\n${ctx.projectContext.slice(0, 2000)}`);
+            }
+            if (ctx.selection) {
+                lines.push(`Active selection (${ctx.activeFile}):\n${ctx.selection.slice(0, 2000)}`);
+            }
+            if (ctx.diagnostics.length) {
+                const diags = ctx.diagnostics.slice(0, 10)
+                    .map((d) => `${d.file}:${d.line} [${d.severity}] ${d.message}`)
+                    .join('\n');
+                lines.push(`Diagnostics:\n${diags}`);
+            }
+            if (ctx.relatedFiles.length) {
+                lines.push(`Related files: ${ctx.relatedFiles.slice(0, 10).join(', ')}`);
+            }
+            if (ctx.gitDiff) {
+                lines.push(`Working diff:\n${ctx.gitDiff.slice(0, 2000)}`);
+            }
+        }
+        return this.collaborate(lines.filter(Boolean).join('\n'));
     }
 }

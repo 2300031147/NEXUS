@@ -16,6 +16,30 @@ import urllib.error
 
 logger = logging.getLogger("SwarmConsensus")
 
+# Shared-context bounds: every node receives the same truncated snapshot so
+# one giant workspace cannot blow up prompts or stall the loop. Sized for
+# small local models (worst case ≈ 9k chars, not 46k).
+MAX_PROMPT_SUMMARY_CHARS = 2000
+MAX_PROMPT_FILES = 8
+MAX_PROMPT_FILE_CHARS = 800
+# Per-node call budget: the HTTP layer already times out at 120s; this caps
+# the wait so one slow node cannot stall a whole round indefinitely.
+NODE_CALL_TIMEOUT_S = 150.0
+
+
+def build_shared_context(project_context: Dict[str, Any]) -> Dict[str, str]:
+    """Bounded, identical context snapshot broadcast to every node."""
+    summary = str(project_context.get("summary", ""))[:MAX_PROMPT_SUMMARY_CHARS]
+    files = project_context.get("files", []) or []
+    parts = []
+    for entry in files[:MAX_PROMPT_FILES]:
+        if isinstance(entry, dict):
+            text = str(entry.get("content", entry.get("path", "")))
+            parts.append(f"--- {entry.get('path', 'unnamed')} ---\n{text[:MAX_PROMPT_FILE_CHARS]}")
+        else:
+            parts.append(str(entry)[:MAX_PROMPT_FILE_CHARS])
+    return {"summary": summary, "files": "\n\n".join(parts)}
+
 
 class MultiModelConsensusEngine:
     def __init__(self, local_node_info: Dict[str, Any], local_llama_url: str = "http://127.0.0.1:8080") -> None:
@@ -23,6 +47,21 @@ class MultiModelConsensusEngine:
         self.local_llama_url = local_llama_url
         self.discussion_history: List[Dict[str, Any]] = []
         self.max_verification_rounds = 4
+        self.node_timeout = NODE_CALL_TIMEOUT_S
+
+    async def _call_with_timeout(self, endpoint_url: str, prompt: str, system_prompt: str = "") -> str:
+        """Bounded model call: a timeout is a failure, never a verdict."""
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(self._call_model_completion, endpoint_url, prompt, system_prompt),
+                timeout=self.node_timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(f"Model call to {endpoint_url} timed out after {self.node_timeout}s.")
+            return (
+                f"[{self.local_node.get('model_name', 'Node')} ERROR]: model call to {endpoint_url} timed out; "
+                f"no proposal/verdict produced — requires human review."
+            )
 
     def _call_model_completion(self, endpoint_url: str, prompt: str, system_prompt: str = "") -> str:
         """Call standard OpenAI/llama.cpp completion endpoint on a target node."""
@@ -48,6 +87,12 @@ class MultiModelConsensusEngine:
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
+                if isinstance(data, dict) and data.get("mock") is True:
+                    # Mock completions carry no verdict: treat as abstention.
+                    return (
+                        f"[{self.local_node.get('model_name', 'Node')} ABSTAIN]: peer returned a mock "
+                        f"completion (no backend); no proposal/verdict produced — requires human review."
+                    )
                 choices = data.get("choices", [])
                 if choices:
                     return str(choices[0].get("message", {}).get("content", ""))
@@ -72,6 +117,8 @@ class MultiModelConsensusEngine:
         """
         all_nodes = active_peers if active_peers else [self.local_node]
         transcript: List[Dict[str, Any]] = []
+        shared = build_shared_context(project_context)
+        revision_failed = False
 
         if progress_callback:
             await progress_callback({
@@ -95,7 +142,8 @@ class MultiModelConsensusEngine:
                 })
 
             prompt = (
-                f"Project Summary:\n{project_context.get('summary', '')}\n\n"
+                f"Project Summary:\n{shared['summary']}\n\n"
+                f"Project Files:\n{shared['files']}\n\n"
                 f"Target Task: {user_prompt}\n\n"
                 f"As a collaborative AI team member running on node {node_name} with tiered SSD+RAM memory, "
                 f"analyze the codebase structure, propose the optimal technical solution, and list key files to modify."
@@ -110,8 +158,7 @@ class MultiModelConsensusEngine:
             if proposer_role:
                 proposer_system += f" Your team role is: {proposer_role}."
 
-            response_text = await asyncio.to_thread(
-                self._call_model_completion,
+            response_text = await self._call_with_timeout(
                 api_url,
                 prompt,
                 proposer_system
@@ -169,8 +216,7 @@ class MultiModelConsensusEngine:
                 if reviewer_role:
                     reviewer_system += f" Your team role is: {reviewer_role}."
 
-                review_raw = await asyncio.to_thread(
-                    self._call_model_completion,
+                review_raw = await self._call_with_timeout(
                     r_url,
                     review_prompt,
                     reviewer_system
@@ -258,13 +304,14 @@ class MultiModelConsensusEngine:
                     })
 
                 # Use the local model to synthesize the revision
-                current_proposal_text = await asyncio.to_thread(
-                    self._call_model_completion,
+                current_proposal_text = await self._call_with_timeout(
                     self.local_llama_url,
                     revision_prompt,
                     "You are the Lead Architect. Your job is to integrate the team's feedback into a flawless, unified proposal."
                 )
-                
+                if "ERROR]:" in current_proposal_text or "ABSTAIN]:" in current_proposal_text:
+                    revision_failed = True
+
                 verification_round += 1
 
         # Stage 3: Synthesize finalized zero-error implementation plan.
@@ -298,6 +345,7 @@ class MultiModelConsensusEngine:
                     if all_models_approved else
                     f"Stopped after {verification_round} round(s) with "
                     f"{unresolved_count} unapproved review(s); human review required."
+                    + (" Revision synthesis also failed on at least one round." if revision_failed else "")
                 )
             ),
             "tasks": [

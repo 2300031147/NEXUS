@@ -31,6 +31,34 @@ logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(name)s] %(level
 logger = logging.getLogger("SwarmNode")
 
 
+def normalize_ingest(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce an ingest body into the IngestedContext shape hosts read.
+
+    Hosts expect {summary, files[{path,...}], ingested_at, total_tokens};
+    raw client payloads only carry {summary, files}. Never aliases input.
+    """
+    summary = str(payload.get("summary", ""))
+    files = payload.get("files", []) or []
+    norm_files: List[Dict[str, Any]] = []
+    chars = len(summary)
+    for entry in files:
+        if isinstance(entry, dict):
+            norm = dict(entry)
+            norm["path"] = str(norm.get("path", ""))
+            content = norm.get("content", "")
+            chars += len(str(content)) if content else 0
+            norm_files.append(norm)
+        else:
+            norm_files.append({"path": str(entry)})
+            chars += len(str(entry))
+    return {
+        "summary": summary,
+        "files": norm_files,
+        "ingested_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "total_tokens": max(chars // 4, 0),
+    }
+
+
 def get_local_ip() -> str:
     """Detect non-loopback local network IP."""
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -136,6 +164,25 @@ class SwarmNodeService:
         self.backend = detected
         if detected["reachable"]:
             self.node_info.model_name = detected["model_name"]
+
+    def apply_settings(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply a /v1/node/settings body to the local node. Invalid values are ignored."""
+        if "role_description" in payload:
+            self.role_description = payload["role_description"]
+            self.node_info.role_description = payload["role_description"]
+        if "model_name" in payload:
+            self.model_name = payload["model_name"]
+            self.node_info.model_name = payload["model_name"]
+        for key in ("vram_gb", "ram_gb", "ssd_swap_gb", "max_context"):
+            if key in payload:
+                try:
+                    value = float(payload[key])
+                except (TypeError, ValueError):
+                    continue
+                if value < 0:
+                    continue
+                setattr(self.node_info, key, int(value) if key == "max_context" else value)
+        return self.node_info.to_dict()
 
     def get_topology(self) -> Dict[str, Any]:
         """Full cluster recognition snapshot for hosts (e.g. SwarmCode).
@@ -252,13 +299,13 @@ class SwarmNodeService:
                             "scope": service.workspace_scope.to_dict(),
                         })
                         return
-                    # Ingest workspace project context (copy: never alias the request dict)
-                    service.project_context = {**payload, "files": list(payload.get("files", []))}
-                    logger.info(f"Ingested workspace context: {len(payload.get('files', []))} files.")
+                    # Ingest workspace project context (normalized copy: never alias the request dict)
+                    service.project_context = normalize_ingest(payload)
+                    logger.info(f"Ingested workspace context: {len(service.project_context['files'])} files.")
                     self._send_json(200, {
                         "status": "success",
                         "message": f"Context ingested successfully into node '{service.hostname}' SSD+RAM tiered memory.",
-                        "file_count": len(payload.get("files", []))
+                        "file_count": len(service.project_context["files"])
                     })
 
                 elif base_path == "/v1/cluster/scope":
@@ -271,13 +318,8 @@ class SwarmNodeService:
 
                 elif base_path == "/v1/node/settings":
                     # Update local node configuration settings (e.g., from native UI)
-                    if "role_description" in payload:
-                        service.role_description = payload["role_description"]
-                        service.node_info.role_description = payload["role_description"]
-                    if "model_name" in payload:
-                        service.model_name = payload["model_name"]
-                        service.node_info.model_name = payload["model_name"]
-                    self._send_json(200, {"status": "success", "node": service.node_info.to_dict()})
+                    node = service.apply_settings(payload)
+                    self._send_json(200, {"status": "success", "node": node})
 
                 elif base_path == "/v1/cluster/collaborate" or base_path == "/v1/cluster/discuss":
                     # Run multi-model deliberation & zero-error cross-verification loop

@@ -43,3 +43,11 @@ UDP beacons on port 52415 (`SWARM` magic) via multicast `224.0.0.111`,
 subnet `<broadcast>`, and `127.255.255.255`. Never unicast: the kernel
 load-balances unicast across `SO_REUSEPORT` listeners so co-located nodes
 miss each other.
+
+## Beacon authentication (pre-shared key)
+
+Set `SWARM_BEACON_KEY` on every node to sign beacons (HMAC-SHA256 over
+`SWARMv1|<magic>|<node_id>|<role>|<port>|<model>|<ts>`; JSON gains
+integer `ts` and hex `sig`). Receivers drop beacons that are unsigned,
+badly signed, or older than 60 s. Without the variable, unsigned beacons
+keep working (compat mode) — join trusted networks only in that case.

@@ -160,19 +160,24 @@ async def chat_completions(req: dict):
         except Exception as e:
             print(f"Backend proxy failed, falling back to mock: {e}")
 
-    # Mock OpenAI completions endpoint to allow the agent to participate in the swarm consensus loop
+    # Mock OpenAI completions endpoint so the node can stay in the loop
+    # without a backend. The mock NEVER approves: review-like prompts get an
+    # explicit abstention (free of any approval signal), so a down backend
+    # cannot auto-approve plans in consensus.
     messages = req.get("messages", [])
     prompt = messages[-1].get("content", "") if messages else ""
 
-    # We will simulate a response that passes the zero-error review.
-    # If the prompt asks for a review, say "No errors found."
     if "review" in prompt.lower() or "verify" in prompt.lower():
-        content = f"[{NODE_ROLE} / {EFFECTIVE_MODEL}]: I have reviewed the proposal and found NO ERRORS. It looks solid."
+        content = (
+            f"[{NODE_ROLE} / {EFFECTIVE_MODEL}]: ABSTAIN — no local backend "
+            f"is running, so I cannot verify this proposal. Requires human review."
+        )
     else:
         content = f"[{NODE_ROLE} / {EFFECTIVE_MODEL}]: This is my generated proposal based on my local RAM context."
 
     return {
         "id": "mock-completion-123",
+        "mock": True,
         "object": "chat.completion",
         "created": 1234567890,
         "model": EFFECTIVE_MODEL,

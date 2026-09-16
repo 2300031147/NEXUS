@@ -4,6 +4,12 @@ import json
 import threading
 import time
 import uuid
+from typing import Optional
+
+try:
+    from node_config import beacon_key as get_beacon_key, sign_beacon, verify_beacon
+except ImportError:  # imported as part of the `cluster` package
+    from cluster.node_config import beacon_key as get_beacon_key, sign_beacon, verify_beacon
 
 # Multicast settings
 MCAST_GRP = '224.0.0.111'
@@ -11,12 +17,15 @@ MCAST_PORT = 52415
 MAGIC_HEADER = "SWARM"
 
 class ClusterDaemon:
-    def __init__(self, node_id, node_role, http_port, node_model):
+    def __init__(self, node_id, node_role, http_port, node_model, beacon_key: Optional[str] = None):
         self.node_id = node_id
         self.node_role = node_role
         self.http_port = http_port
         self.node_model = node_model
-        
+        # Pre-shared beacon key (SWARM_BEACON_KEY env when omitted).
+        # Set → sign beacons and drop anything unverifiable.
+        self.beacon_key = beacon_key if beacon_key is not None else get_beacon_key()
+
         self.peers = {} # node_id -> { "ip": str, "port": int, "role": str, "model": str, "last_seen": float }
         self.lock = threading.Lock()
         self.running = False
@@ -85,6 +94,8 @@ class ClusterDaemon:
                 "port": self.http_port,
                 "model": self.node_model
             }
+            if self.beacon_key:
+                payload = sign_beacon(payload, self.beacon_key)
             msg = json.dumps(payload).encode('utf-8')
             try:
                 sock.sendto(msg, (MCAST_GRP, MCAST_PORT))
@@ -108,7 +119,11 @@ class ClusterDaemon:
             payload = json.loads(data.decode('utf-8'))
             if payload.get("magic") != MAGIC_HEADER:
                 return
-            
+
+            ok, _reason = verify_beacon(payload, self.beacon_key)
+            if not ok:
+                return
+
             nid = payload["node_id"]
             if nid == self.node_id:
                 return # Ignore self

@@ -8,12 +8,65 @@ truthfully to the swarm. It also owns the workspace file scopes: the folders
 and files the user explicitly grants to the models.
 """
 
+import hashlib
+import hmac
 import json
 import os
 import socket
+import time
 import urllib.request
 import urllib.error
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
+
+
+# Beacon authentication (pre-shared key, HMAC-SHA256).
+#
+# Wire format: JSON beacons may carry `ts` (unix seconds) and `sig`
+# (hex HMAC over the canonical string
+# "SWARMv1|<magic>|<node_id>|<role>|<port>|<model>|<ts>").
+# When SWARM_BEACON_KEY is set, beacons are signed and receivers drop
+# anything unsigned, badly signed, or older than BEACON_MAX_SKEW_S.
+# When unset, yesterday's unsigned beacons keep working (compat mode).
+BEACON_KEY_ENV = "SWARM_BEACON_KEY"
+BEACON_MAX_SKEW_S = 60
+
+
+def beacon_key() -> str:
+    """Pre-shared beacon key, or "" when authentication is off."""
+    return os.getenv(BEACON_KEY_ENV, "")
+
+
+def sign_beacon(payload: Dict[str, Any], key: str, now: Optional[float] = None) -> Dict[str, Any]:
+    """Return a copy of payload with fresh `ts`/`sig` fields."""
+    stamped = dict(payload)
+    stamped["ts"] = int(now if now is not None else time.time())
+    canonical = "|".join([
+        "SWARMv1",
+        str(stamped.get("magic", "")),
+        str(stamped.get("node_id", "")),
+        str(stamped.get("role", "")),
+        str(stamped.get("port", "")),
+        str(stamped.get("model", "")),
+        str(stamped["ts"]),
+    ])
+    stamped["sig"] = hmac.new(key.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+    return stamped
+
+
+def verify_beacon(payload: Dict[str, Any], key: str, now: Optional[float] = None) -> Tuple[bool, str]:
+    """Check a received beacon. Empty key accepts everything (compat mode)."""
+    if not key:
+        return True, "unsigned-compat"
+    sig = payload.get("sig")
+    ts = payload.get("ts")
+    if not isinstance(sig, str) or not isinstance(ts, int) or isinstance(ts, bool):
+        return False, "missing-sig-or-ts"
+    if abs((now if now is not None else time.time()) - ts) > BEACON_MAX_SKEW_S:
+        return False, "stale-beacon"
+    expected = sign_beacon(payload, key, ts)["sig"]
+    if not hmac.compare_digest(expected, sig):
+        return False, "bad-signature"
+    return True, "ok"
 
 
 def get_local_ip() -> str:
