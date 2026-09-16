@@ -104,6 +104,10 @@ function fmtTime(ts) {
   return new Date(ts).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit', second:'2-digit' });
 }
 
+function escape(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 function statusOfStep(step, currentStatus) {
   const idx = PIPELINE.indexOf(step);
   const cur = PIPELINE.indexOf(currentStatus);
@@ -130,8 +134,8 @@ function renderSession(s) {
   s.events.slice(-12).forEach(ev => {
     timeline += '<div class="tl-item">' +
       '<span class="tl-time">' + fmtTime(ev.timestamp) + '</span>' +
-      '<span class="tl-node">' + ev.nodeId + '</span>' +
-      '<span class="tl-msg">' + (eventLabels[ev.type] || ev.type) + '</span>' +
+      '<span class="tl-node">' + escape(ev.nodeId) + '</span>' +
+      '<span class="tl-msg">' + escape(eventLabels[ev.type] || ev.type) + '</span>' +
     '</div>';
   });
   timeline += '</div>';
@@ -139,16 +143,16 @@ function renderSession(s) {
   // Result
   let result = '';
   if (s.result) {
-    result = '<div class="result-box">' + s.result.slice(0,800) + (s.result.length>800?'\n…':'') + '</div>' +
-      '<div style="margin-top:4px"><button class="btn copy" onclick="copyResult(\'' + encodeURIComponent(s.result) + '\')">Copy Result</button></div>';
+    result = '<div class="result-box">' + escape(s.result.slice(0,800)) + (s.result.length>800?'\n…':'') + '</div>' +
+      '<div style="margin-top:4px"><button class="btn copy" data-id="' + escape(encodeURIComponent(s.result)) + '">Copy Result</button></div>';
   }
 
   // Approval
   let approval = '';
   if (s.status === 'awaiting_approval') {
     approval = '<div class="approval-row">' +
-      '<button class="btn accept" onclick="accept(\'' + s.sessionId + '\')">✓ Accept Task</button>' +
-      '<button class="btn reject" onclick="reject(\'' + s.sessionId + '\')">✗ Reject</button>' +
+      '<button class="btn accept" data-id="' + escape(s.sessionId) + '">✓ Accept Task</button>' +
+      '<button class="btn reject" data-id="' + escape(s.sessionId) + '">✗ Reject</button>' +
     '</div>';
   }
 
@@ -156,8 +160,17 @@ function renderSession(s) {
   div.className = 'task-card';
   div.id = 'task-' + s.sessionId;
   div.innerHTML =
-    '<div class="task-goal">' + s.taskId + '</div>' +
+    '<div class="task-goal">' + escape(s.taskId) + '</div>' +
     pipeline + timeline + result + approval;
+
+  // Add event listeners to avoid inline onclick XSS
+  if (s.status === 'awaiting_approval') {
+    div.querySelectorAll('.btn.accept').forEach(b => b.addEventListener('click', () => accept(b.dataset.id)));
+    div.querySelectorAll('.btn.reject').forEach(b => b.addEventListener('click', () => reject(b.dataset.id)));
+  }
+  if (s.result) {
+    div.querySelectorAll('.btn.copy').forEach(b => b.addEventListener('click', () => copyResult(b.dataset.id)));
+  }
   return div;
 }
 

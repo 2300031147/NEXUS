@@ -107,8 +107,12 @@ window.addEventListener('message', (e) => {
   const nodesEl = document.getElementById('nodes');
   const status  = document.getElementById('statusBar');
 
+  function escape(s) {
+    return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
   if (msg.command === 'offline') {
-    status.textContent = '● Offline — ' + msg.message.slice(0, 50);
+    status.textContent = '● Offline — ' + String(msg.message || '').slice(0, 50);
     nodesEl.innerHTML = '<div class="offline-msg">⚡ Cannot reach NEXUS host.<br>Check nexus.hostUrl in settings.</div>';
     return;
   }
@@ -125,17 +129,17 @@ window.addEventListener('message', (e) => {
       '<div class="node-header">' +
         '<span class="dot online"></span>' +
         '<div>' +
-          '<div class="node-role">' + (isLocal ? '★ ' : '') + (node.role_description || node.hostname) + '</div>' +
-          '<div class="node-model">' + (node.model_name || 'Unknown model') + '</div>' +
+          '<div class="node-role">' + (isLocal ? '★ ' : '') + escape(node.role_description || node.hostname) + '</div>' +
+          '<div class="node-model">' + escape(node.model_name || 'Unknown model') + '</div>' +
         '</div>' +
       '</div>' +
       '<div class="memory-row">' +
-        (vram(node.vram_gb) ? '<span class="badge">VRAM ' + vram(node.vram_gb) + '</span>' : '') +
-        (ram(node.ram_gb)   ? '<span class="badge">RAM ' + ram(node.ram_gb) + '</span>' : '') +
-        (ssd(node.ssd_swap_gb) ? '<span class="badge">SSD ' + ssd(node.ssd_swap_gb) + '</span>' : '') +
+        (vram(node.vram_gb) ? '<span class="badge">VRAM ' + escape(vram(node.vram_gb)) + '</span>' : '') +
+        (ram(node.ram_gb)   ? '<span class="badge">RAM ' + escape(ram(node.ram_gb)) + '</span>' : '') +
+        (ssd(node.ssd_swap_gb) ? '<span class="badge">SSD ' + escape(ssd(node.ssd_swap_gb)) + '</span>' : '') +
         '<span class="badge">ctx ' + (node.max_context||0).toLocaleString() + '</span>' +
       '</div>' +
-      '<div class="node-meta">' + node.api_host + ':' + node.api_port + ' · ' + node.node_id + '</div>';
+      '<div class="node-meta">' + escape(node.api_host) + ':' + node.api_port + ' · ' + escape(node.node_id) + '</div>';
     return card;
   }
 

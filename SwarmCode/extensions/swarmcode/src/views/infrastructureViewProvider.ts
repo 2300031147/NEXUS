@@ -88,34 +88,38 @@ function gauge(name, usedGb, totalGb, fillClass) {
   </div>\`;
 }
 
+function escape(s) {
+  return String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 function renderNode(node, isLocal) {
   let html = \`<div class="node-section">
-    <div class="node-title">\${isLocal ? '★ Local Node' : '⬡ '+node.hostname}\${isLocal ? ' <span class="local-tag">LOCAL</span>' : ''}</div>
-    <div style="font-size:0.8em;opacity:0.65;margin-bottom:8px;">\${node.model_name || 'Unknown model'} · \${node.role_description || ''}</div>\`;
+    <div class="node-title">\${isLocal ? '★ Local Node' : '⬡ '+escape(node.hostname)}\${isLocal ? ' <span class="local-tag">LOCAL</span>' : ''}</div>
+    <div style="font-size:0.8em;opacity:0.65;margin-bottom:8px;">\${escape(node.model_name || 'Unknown model')} · \${escape(node.role_description || '')}</div>\`;
 
-  html += gauge('VRAM', 0, node.vram_gb || 0, 'fill-vram');
-  html += gauge('RAM',  0, node.ram_gb  || 0, 'fill-ram');
-  html += gauge('SSD Swap', 0, node.ssd_swap_gb || 0, 'fill-ssd');
+  html += gauge('VRAM', node.vram_used_gb ?? null, node.vram_gb || 0, 'fill-vram');
+  html += gauge('RAM',  node.ram_used_gb ?? null, node.ram_gb  || 0, 'fill-ram');
+  html += gauge('SSD Swap', node.ssd_swap_used_gb ?? null, node.ssd_swap_gb || 0, 'fill-ssd');
 
   // KV Cache section
   if (node.vram_gb || node.ram_gb || node.ssd_swap_gb) {
     html += \`<div class="kv-section"><div class="kv-label">KV Cache Tiers</div>\`;
-    html += gauge('KV · VRAM', 0, node.vram_gb * 0.3 || 0, 'fill-kv');
-    html += gauge('KV · RAM',  0, node.ram_gb  * 0.4 || 0, 'fill-kv');
-    html += gauge('KV · SSD',  0, node.ssd_swap_gb * 0.6 || 0, 'fill-kv');
+    html += gauge('KV · VRAM', node.kv_vram_used_gb ?? null, node.vram_gb * 0.3 || 0, 'fill-kv');
+    html += gauge('KV · RAM',  node.kv_ram_used_gb ?? null, node.ram_gb  * 0.4 || 0, 'fill-kv');
+    html += gauge('KV · SSD',  node.kv_ssd_used_gb ?? null, node.ssd_swap_gb * 0.6 || 0, 'fill-kv');
     html += '</div>';
   }
 
   // Tags / badges
   if (node.tags && node.tags.length) {
     html += '<div class="badges">';
-    node.tags.forEach(t => { html += '<span class="badge'+( t==='unified_memory'?' unified':'')+'">'+t+'</span>'; });
+    node.tags.forEach(t => { html += '<span class="badge'+( t==='unified_memory'?' unified':'')+'">'+escape(t)+'</span>'; });
     html += '</div>';
   }
 
   html += \`<div class="badges" style="margin-top:4px;">
     <span class="badge">ctx \${(node.max_context||0).toLocaleString()}</span>
-    <span class="badge">\${node.api_host}:\${node.api_port}</span>
+    <span class="badge">\${escape(node.api_host)}:\${node.api_port}</span>
   </div>\`;
 
   html += '</div>';
@@ -126,7 +130,7 @@ window.addEventListener('message', (e) => {
   const msg = e.data;
   const root = document.getElementById('root');
   if (msg.command === 'offline') {
-    root.innerHTML = '<div class="offline-msg">⚡ Offline: ' + msg.message.slice(0,60) + '</div>';
+    root.innerHTML = '<div class="offline-msg">⚡ Offline: ' + escape(String(msg.message || '').slice(0,60)) + '</div>';
     return;
   }
   if (msg.command !== 'topology') return;

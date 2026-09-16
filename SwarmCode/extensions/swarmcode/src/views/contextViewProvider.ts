@@ -63,7 +63,7 @@ export class ContextViewProvider implements vscode.WebviewViewProvider {
         const entries = await this.contextEngine.buildFileEntries(filesToIngest);
         const summary = `Workspace: ${ctx.workspace}. Active: ${ctx.activeFile}.`;
 
-        vscode.window.withProgress(
+        await vscode.window.withProgress(
             { location: vscode.ProgressLocation.Notification, title: 'NEXUS: Ingesting context…' },
             async () => {
                 await this.client.ingestContext(summary, entries);
@@ -108,6 +108,10 @@ function ingest() { vscode.postMessage({ command: 'ingest' }); }
 function clearScope() { vscode.postMessage({ command: 'clearScope' }); }
 function grantScope() { vscode.postMessage({ command: 'grantScope' }); }
 
+function escape(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 function shorten(p) {
   if (!p) return '';
   const parts = p.replace(/\\\\/g, '/').split('/');
@@ -130,14 +134,14 @@ window.addEventListener('message', (e) => {
 
   // Current file
   html += '<h3>Current</h3><div class="section">';
-  if (ctx.activeFile) html += '<div class="file-item active">› ' + shorten(ctx.activeFile) + '</div>';
+  if (ctx.activeFile) html += '<div class="file-item active">› ' + escape(shorten(ctx.activeFile)) + '</div>';
   else html += '<div class="empty">No active file</div>';
   html += '</div>';
 
   // Related files
   html += '<h3>Related</h3><div class="section">';
   if (ctx.relatedFiles.length) {
-    ctx.relatedFiles.forEach(f => { html += '<div class="file-item">  ' + shorten(f) + '</div>'; });
+    ctx.relatedFiles.forEach(f => { html += '<div class="file-item">  ' + escape(shorten(f)) + '</div>'; });
   } else { html += '<div class="empty">None detected</div>'; }
   html += '</div>';
 
@@ -146,13 +150,13 @@ window.addEventListener('message', (e) => {
   const warns = ctx.diagnostics.filter(d => d.severity === 'warning');
   html += '<h3>Diagnostics</h3><div class="section">';
   if (!errs.length && !warns.length) { html += '<div class="empty">No issues</div>'; }
-  errs.slice(0, 3).forEach(d => { html += '<div class="diag error">✗ ' + shorten(d.file) + ':' + d.line + ' ' + d.message.slice(0,50) + '</div>'; });
-  warns.slice(0, 3).forEach(d => { html += '<div class="diag warning">⚠ ' + shorten(d.file) + ':' + d.line + ' ' + d.message.slice(0,50) + '</div>'; });
+  errs.slice(0, 3).forEach(d => { html += '<div class="diag error">✗ ' + escape(shorten(d.file)) + ':' + d.line + ' ' + escape(d.message.slice(0,50)) + '</div>'; });
+  warns.slice(0, 3).forEach(d => { html += '<div class="diag warning">⚠ ' + escape(shorten(d.file)) + ':' + d.line + ' ' + escape(d.message.slice(0,50)) + '</div>'; });
   html += '</div>';
 
   // Git
   html += '<h3>Git</h3><div class="section">';
-  if (ctx.gitBranch) html += '<div class="file-item">Branch: ' + ctx.gitBranch + '</div>';
+  if (ctx.gitBranch) html += '<div class="file-item">Branch: ' + escape(ctx.gitBranch) + '</div>';
   if (ctx.modifiedFiles.length) html += '<div class="file-item">' + ctx.modifiedFiles.length + ' modified file' + (ctx.modifiedFiles.length===1?'':'s') + '</div>';
   else html += '<div class="empty">No changes</div>';
   html += '</div>';
@@ -169,7 +173,7 @@ window.addEventListener('message', (e) => {
   // Scope
   html += '<h3>NEXUS Scope</h3><div class="section">';
   if (scope.roots.length) {
-    scope.roots.forEach(r => { html += '<div class="scope-root">📁 ' + r + '</div>'; });
+    scope.roots.forEach(r => { html += '<div class="scope-root">📁 ' + escape(r) + '</div>'; });
   } else { html += '<div class="empty">No workspace roots granted</div>'; }
   html += '</div>';
 

@@ -141,7 +141,16 @@ export class NexusClient {
                     }
                 }
             });
-            res.on('end', () => { done = true; notify(); });
+            res.on('end', () => {
+                if (buffer.trim()) {
+                    const trimmed = buffer.replace(/^data:\s*/, '').trim();
+                    if (trimmed && trimmed !== '[DONE]') {
+                        queue.push(trimmed);
+                    }
+                }
+                done = true;
+                notify();
+            });
             res.on('error', (e) => { error = e as Error; done = true; notify(); });
         });
         req.on('error', (e) => { error = e as Error; done = true; notify(); });

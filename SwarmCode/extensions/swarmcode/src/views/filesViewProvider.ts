@@ -63,15 +63,20 @@ export class FilesViewProvider implements vscode.WebviewViewProvider {
     }
 
     private async ingestFiles(paths: string[]) {
-        const entries = await this.contextEngine.buildFileEntries(paths);
-        const summary = `Files: ${paths.join(', ')}`;
-        await vscode.window.withProgress(
-            { location: vscode.ProgressLocation.Notification, title: `NEXUS: Ingesting ${entries.length} file(s)…` },
-            async () => {
-                await this.client.ingestContext(summary, entries);
-            }
-        );
-        vscode.window.showInformationMessage(`NEXUS: ${entries.length} file(s) sent to NEXUS memory.`);
+        if (!paths.length) { return; }
+        try {
+            const entries = await this.contextEngine.buildFileEntries(paths);
+            const summary = `Files: ${paths.join(', ')}`;
+            await vscode.window.withProgress(
+                { location: vscode.ProgressLocation.Notification, title: `NEXUS: Ingesting ${entries.length} file(s)…` },
+                async () => {
+                    await this.client.ingestContext(summary, entries);
+                }
+            );
+            vscode.window.showInformationMessage(`NEXUS: ${entries.length} file(s) sent to NEXUS memory.`);
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`NEXUS: Failed to ingest files: ${e.message}`);
+        }
     }
 
     private getHtml(): string {
@@ -139,7 +144,15 @@ window.addEventListener('message', (e) => {
   openFiles.forEach(fp => {
     const row = document.createElement('div');
     row.className = 'file-row';
-    row.innerHTML = '<input type="checkbox" value="' + fp + '"><span class="file-name">📄 ' + shorten(fp) + '</span>';
+    // Use DOM APIs to set the checkbox value safely (avoids XSS via file paths with quotes/angle brackets)
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.value = fp;
+    const label = document.createElement('span');
+    label.className = 'file-name';
+    label.textContent = '📄 ' + shorten(fp);
+    row.appendChild(cb);
+    row.appendChild(label);
     el.appendChild(row);
   });
 });

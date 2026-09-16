@@ -128,7 +128,7 @@ export class ToolGateway {
     }
 
     private async searchWorkspace(query: string): Promise<ToolResult> {
-        const results = await vscode.workspace.findFiles(`**/*`, '**/node_modules/**', 20);
+        const results = await vscode.workspace.findFiles(`**/*`, '**/node_modules/**', 1000);
         const matched: string[] = [];
         for (const uri of results) {
             try {

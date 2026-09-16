@@ -23,7 +23,8 @@ export class MemoryViewProvider implements vscode.WebviewViewProvider {
         webviewView.webview.onDidReceiveMessage(async (msg) => {
             if (msg.command === 'refresh') { await this.refresh(); }
             if (msg.command === 'clear') {
-                await this.client.clearScope();
+                // Ingest an empty context to reset the server-side memory
+                await this.client.ingestContext('', []);
                 vscode.window.showInformationMessage('NEXUS: Context memory cleared.');
                 await this.refresh();
             }
@@ -84,6 +85,10 @@ function shorten(p) {
   return p.replace(/\\\\/g, '/').split('/').slice(-2).join('/');
 }
 
+function escape(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 window.addEventListener('message', (e) => {
   const msg = e.data;
   const root = document.getElementById('root');
@@ -96,9 +101,8 @@ window.addEventListener('message', (e) => {
   const ctx = msg.ctx;
   if (!ctx) { root.innerHTML = '<div class="empty">No context ingested yet.</div>'; return; }
 
-  const totalKB = Math.round((ctx.total_tokens || 0) / 1000 * 0.75);
   let html = '<div class="summary">' +
-    '<div>' + (ctx.summary || 'No summary') + '</div>' +
+    '<div>' + escape(ctx.summary || 'No summary') + '</div>' +
     '<div class="meta">Ingested: ' + (ctx.ingested_at ? new Date(ctx.ingested_at).toLocaleString() : 'Unknown') + ' · ~' + (ctx.total_tokens || 0).toLocaleString() + ' tokens</div>' +
   '</div>';
 
@@ -107,8 +111,8 @@ window.addEventListener('message', (e) => {
     ctx.files.forEach(f => {
       const kb = f.size ? Math.round(f.size / 1024) + ' KB' : (f.content ? Math.round(f.content.length / 1024) + ' KB' : '');
       html += '<div class="file-row">' +
-        '<span class="file-name">📄 ' + shorten(f.path) + '</span>' +
-        '<span class="file-size">' + kb + '</span>' +
+        '<span class="file-name">📄 ' + escape(shorten(f.path)) + '</span>' +
+        '<span class="file-size">' + escape(kb) + '</span>' +
       '</div>';
     });
   } else {

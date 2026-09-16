@@ -67,6 +67,11 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
             } catch { /* context not available */ }
         }
 
+        // Trim history to prevent unbounded growth in long sessions
+        if (this.history.length > 50) {
+            this.history = this.history.slice(-50);
+        }
+
         const messages: ChatMessage[] = [
             { role: 'system', content: systemContent },
             ...this.history,

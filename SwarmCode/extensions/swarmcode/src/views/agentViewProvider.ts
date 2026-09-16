@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { TaskManager } from '../taskManager';
-import { TaskSession, NexusEventType } from '../types';
+import { TaskSession } from '../types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Agent View Provider — NEXUS TEAM: per-node status cards with live events
@@ -42,15 +42,7 @@ export class AgentViewProvider implements vscode.WebviewViewProvider {
         }
     }
 
-    private roleEmoji(role: string): string {
-        const r = role.toLowerCase();
-        if (r.includes('architect') || r.includes('plan')) { return '🧠'; }
-        if (r.includes('cod') || r.includes('impl') || r.includes('dev')) { return '💻'; }
-        if (r.includes('review')) { return '🔍'; }
-        if (r.includes('security') || r.includes('sec')) { return '🛡'; }
-        if (r.includes('test')) { return '🧪'; }
-        return '🤖';
-    }
+
 
     private getHtml(): string {
         return `<!DOCTYPE html>
@@ -105,6 +97,10 @@ h3 { font-size: 0.75em; text-transform: uppercase; letter-spacing: 0.08em; opaci
 <script>
 const vscode = acquireVsCodeApi();
 
+function escape(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 const eventLabels = {
   NODE_STARTED: 'started',
   NODE_THINKING: 'thinking…',
@@ -142,8 +138,8 @@ function renderSessions(sessions) {
     const div = document.createElement('div');
     div.style.marginBottom = '12px';
 
-    const header = '<div class="task-header"><div class="task-title">Task: ' + s.taskId + '</div>' +
-      '<div class="task-status">' + statusLabel(s.status) + '</div></div>';
+    const header = '<div class="task-header"><div class="task-title">Task: ' + escape(s.taskId) + '</div>' +
+      '<div class="task-status">' + escape(statusLabel(s.status)) + '</div></div>';
 
     // Group events by nodeId
     const nodeMap = {};
@@ -164,10 +160,10 @@ function renderSessions(sessions) {
       agents += '<div class="agent-card">' +
         '<span class="emoji">🤖</span>' +
         '<div class="agent-info">' +
-          '<div class="agent-role">' + (info.role || nodeId) + '</div>' +
-          '<div class="agent-model">' + nodeId + '</div>' +
+          '<div class="agent-role">' + escape(info.role || nodeId) + '</div>' +
+          '<div class="agent-model">' + escape(nodeId) + '</div>' +
         '</div>' +
-        '<span class="status-badge status-' + badge + '">' + (eventLabels[ev.type] || ev.type) + '</span>' +
+        '<span class="status-badge status-' + badge + '">' + escape(eventLabels[ev.type] || ev.type) + '</span>' +
       '</div>';
     });
 
@@ -176,21 +172,25 @@ function renderSessions(sessions) {
     s.events.slice(-8).forEach(ev => {
       timeline += '<div class="tl-item">' +
         '<span class="tl-time">' + fmtTime(ev.timestamp) + '</span>' +
-        '<span class="tl-node">' + ev.nodeId + '</span>' +
-        '<span class="tl-msg">' + (eventLabels[ev.type] || ev.type) + '</span>' +
+        '<span class="tl-node">' + escape(ev.nodeId) + '</span>' +
+        '<span class="tl-msg">' + escape(eventLabels[ev.type] || ev.type) + '</span>' +
       '</div>';
     });
     timeline += '</div>';
 
     let approval = '';
     if (s.status === 'awaiting_approval') {
+      // Use data attribute + event listener instead of inline onclick to avoid sessionId injection
       approval = '<div class="approval-row">' +
-        '<button class="btn accept" onclick="accept(\'' + s.sessionId + '\')">✓ Accept</button>' +
-        '<button class="btn reject" onclick="reject(\'' + s.sessionId + '\')">✗ Reject</button>' +
+        '<button class="btn accept" data-id="' + escape(s.sessionId) + '">✓ Accept</button>' +
+        '<button class="btn reject" data-id="' + escape(s.sessionId) + '">✗ Reject</button>' +
       '</div>';
     }
 
     div.innerHTML = header + agents + timeline + approval;
+    // Attach event listeners after setting innerHTML (avoids inline onclick injection)
+    div.querySelectorAll('.btn.accept').forEach(btn => btn.addEventListener('click', () => accept(btn.dataset.id)));
+    div.querySelectorAll('.btn.reject').forEach(btn => btn.addEventListener('click', () => reject(btn.dataset.id)));
     root.appendChild(div);
   });
 }
