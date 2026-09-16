@@ -1,6 +1,11 @@
+import os
 import re
+import sys
 
-with open("src/llama-kv-swap.cpp", "r") as f:
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CPP = os.path.join(_HERE, "src", "llama-kv-swap.cpp")
+
+with open(_CPP, "r", encoding="utf-8") as f:
     content = f.read()
 
 old_add = """    for (const auto & meta : to_add) {
@@ -24,8 +29,9 @@ new_add = """    for (const auto & meta : to_add) {
 
 if old_add in content:
     content = content.replace(old_add, new_add)
-    with open("src/llama-kv-swap.cpp", "w") as f:
+    with open(_CPP, "w", encoding="utf-8") as f:
         f.write(content)
     print("Patched cp_seq to add to warm_ram_list")
 else:
     print("Could not find old_add")
+    sys.exit(1)

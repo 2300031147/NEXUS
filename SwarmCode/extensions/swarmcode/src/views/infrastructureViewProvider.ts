@@ -24,8 +24,9 @@ export class InfrastructureViewProvider implements vscode.WebviewViewProvider {
             if (msg.command === 'refresh') { await this.refresh(); }
         });
 
+        if (this._poll) { clearInterval(this._poll); }
         this._poll = setInterval(() => this.refresh(), 15000);
-        webviewView.onDidDispose(() => { if (this._poll) { clearInterval(this._poll); } });
+        webviewView.onDidDispose(() => { if (this._poll) { clearInterval(this._poll); this._poll = undefined; } });
 
         this.refresh();
     }

@@ -34,6 +34,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── 8 native view providers ──────────────────────────────────────────────
     const clusterProvider = new ClusterTreeProvider(nexusClient);
+    context.subscriptions.push(clusterProvider); // dispose its refresh interval on deactivate
     const ctxProvider     = new ContextTreeProvider(contextEng, nexusClient);
     const agentProvider   = new AgentViewProvider(context.extensionUri, taskManager);
     const taskProvider    = new TaskViewProvider(context.extensionUri, taskManager);
@@ -64,8 +65,12 @@ export function activate(context: vscode.ExtensionContext) {
             });
             if (newValue !== undefined && newValue !== String(item.data.value)) {
                 try {
-                    await nexusClient.updateNodeSettings({ [item.data.key]: newValue });
-                    vscode.window.showInformationMessage(`Updated ${item.data.key} to ${newValue}`);
+                    const topology = await nexusClient.getTopology();
+                    const targetNode = topology.nodes.find((n: any) => n.node_id === item.data.nodeId);
+                    if (!targetNode) throw new Error("Target node not found in topology");
+                    const targetUrl = nexusClient.nodeUrl(targetNode.api_host, targetNode.api_port);
+                    await nexusClient.updateNodeSettings({ [item.data.key]: newValue }, targetUrl);
+                    vscode.window.showInformationMessage(`Updated ${item.data.key} to ${newValue} on ${targetNode.hostname}`);
                     clusterProvider.refresh();
                 } catch (e: any) {
                     vscode.window.showErrorMessage(`Failed to update ${item.data.key}: ${e.message}`);
@@ -145,7 +150,23 @@ export function activate(context: vscode.ExtensionContext) {
     // ── Command: nexus.sendToChat (used by inline actions) ────────────────────
     context.subscriptions.push(
         vscode.commands.registerCommand('nexus.sendToChat', async (text: string, consensus = false) => {
-            vscode.commands.executeCommand('workbench.action.chat.open', { query: `@nexus ${text}` });
+            if (consensus) {
+                const ctx = await contextEng.buildContext();
+                const task: NexusTask = {
+                    id: `consensus-${Date.now()}`,
+                    type: 'consensus',
+                    goal: text,
+                    workspace: ctx.workspace,
+                    files: [ctx.activeFile, ...ctx.relatedFiles].filter(Boolean),
+                    agents: [],
+                    approvalRequired: true,
+                    context: ctx,
+                };
+                await taskManager.submitTask(task);
+                vscode.window.showInformationMessage('NEXUS: Consensus task submitted. Check the Agents & Tasks panels.');
+            } else {
+                vscode.commands.executeCommand('workbench.action.chat.open', { query: `@nexus ${text}` });
+            }
         })
     );
 

@@ -191,7 +191,12 @@ window.addEventListener('message', (e) => {
     const existing = document.getElementById('task-' + msg.session.sessionId);
     const newCard = renderSession(msg.session);
     if (existing) existing.replaceWith(newCard);
-    else { const root = document.getElementById('root'); root.innerHTML = ''; root.appendChild(newCard); }
+    else {
+      const root = document.getElementById('root');
+      const empty = root.querySelector('.empty');
+      if (empty) empty.remove();
+      root.appendChild(newCard);
+    }
   }
   if (msg.command === 'sessions') refresh(msg.sessions);
 });

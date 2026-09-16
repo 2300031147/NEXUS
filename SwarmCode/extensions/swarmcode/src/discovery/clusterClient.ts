@@ -44,19 +44,33 @@ export class ClusterClient {
         });
     }
 
+    private pruneTimer?: NodeJS.Timeout;
+    private discoveryStarted = false;
+
     public startDiscovery() {
+        if (this.discoveryStarted) { return; }
+        this.discoveryStarted = true;
         console.log('Started listening for Swarm cluster UDP discovery beacons.');
-        setInterval(() => {
-            const now = Date.now();
-            for (const [id, peer] of this.peers.entries()) {
-                if (now - peer.lastSeen > 15000) {
-                    this.peers.delete(id); // Prune dead nodes
-                }
+        this.pruneTimer = setInterval(() => this.pruneDeadPeers(), 5000);
+    }
+
+    public dispose() {
+        if (this.pruneTimer) { clearInterval(this.pruneTimer); this.pruneTimer = undefined; }
+        this.discoveryStarted = false;
+        try { this.socket.close(); } catch { /* already closed */ }
+    }
+
+    private pruneDeadPeers() {
+        const now = Date.now();
+        for (const [id, peer] of this.peers.entries()) {
+            if (now - peer.lastSeen > 15000) {
+                this.peers.delete(id); // Prune dead nodes
             }
-        }, 5000);
+        }
     }
 
     public getPeers(): PeerInfo[] {
+        this.pruneDeadPeers();
         return Array.from(this.peers.values());
     }
 }

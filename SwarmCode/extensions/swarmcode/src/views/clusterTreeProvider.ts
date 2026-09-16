@@ -13,10 +13,10 @@ export class ClusterTreeItem extends vscode.TreeItem {
         super(label, collapsibleState);
         
         if (type === 'node') {
-            const isLocal = data.isLocal;
+            const isLocal = data.isLocal === true;
             const isOnline = data.last_seen > (Date.now() / 1000) - 30;
             this.iconPath = new vscode.ThemeIcon('server', isOnline ? new vscode.ThemeColor('testing.iconPassed') : new vscode.ThemeColor('testing.iconFailed'));
-            this.description = data.model_name || 'Unknown model';
+            this.description = (isLocal ? '★ local · ' : '') + (data.model_name || 'Unknown model');
             this.tooltip = `Hostname: ${data.hostname}\nRole: ${data.role_description}\nRAM: ${data.ram_gb} GB`;
             
             // Add command to select node
@@ -65,14 +65,16 @@ export class ClusterTreeProvider implements vscode.TreeDataProvider<ClusterTreeI
                     return [new ClusterTreeItem('No nodes found. Cluster offline.', vscode.TreeItemCollapsibleState.None, 'status')];
                 }
 
+                const localId = (topology as ClusterTopology & { local_node?: NodeInfo }).local_node?.node_id;
                 const items: ClusterTreeItem[] = [];
                 for (const node of topology.nodes) {
-                    const label = (node.hostname === 'localhost' ? '★ ' : '') + (node.role_description || node.hostname);
+                    const isLocal = node.node_id === localId;
+                    const label = (isLocal ? '★ ' : '') + (node.role_description || node.hostname);
                     items.push(new ClusterTreeItem(
                         label,
                         vscode.TreeItemCollapsibleState.Collapsed,
                         'node',
-                        node,
+                        { ...node, isLocal },
                         node.node_id
                     ));
                 }
@@ -84,10 +86,10 @@ export class ClusterTreeProvider implements vscode.TreeDataProvider<ClusterTreeI
             // Child elements: Node settings
             const node = element.data;
             return [
-                new ClusterTreeItem(`Role: ${node.role_description}`, vscode.TreeItemCollapsibleState.None, 'setting', { key: 'role_description', value: node.role_description }, element.parentNodeId),
-                new ClusterTreeItem(`Model: ${node.model_name}`, vscode.TreeItemCollapsibleState.None, 'setting', { key: 'model_name', value: node.model_name }, element.parentNodeId),
-                new ClusterTreeItem(`VRAM limit: ${node.vram_gb} GB`, vscode.TreeItemCollapsibleState.None, 'setting', { key: 'vram_gb', value: node.vram_gb }, element.parentNodeId),
-                new ClusterTreeItem(`RAM limit: ${node.ram_gb} GB`, vscode.TreeItemCollapsibleState.None, 'setting', { key: 'ram_gb', value: node.ram_gb }, element.parentNodeId)
+                new ClusterTreeItem(`Role: ${node.role_description}`, vscode.TreeItemCollapsibleState.None, 'setting', { key: 'role_description', value: node.role_description, nodeId: node.node_id }, element.parentNodeId),
+                new ClusterTreeItem(`Model: ${node.model_name}`, vscode.TreeItemCollapsibleState.None, 'setting', { key: 'model_name', value: node.model_name, nodeId: node.node_id }, element.parentNodeId),
+                new ClusterTreeItem(`VRAM limit: ${node.vram_gb} GB`, vscode.TreeItemCollapsibleState.None, 'setting', { key: 'vram_gb', value: node.vram_gb, nodeId: node.node_id }, element.parentNodeId),
+                new ClusterTreeItem(`RAM limit: ${node.ram_gb} GB`, vscode.TreeItemCollapsibleState.None, 'setting', { key: 'ram_gb', value: node.ram_gb, nodeId: node.node_id }, element.parentNodeId)
             ];
         }
         

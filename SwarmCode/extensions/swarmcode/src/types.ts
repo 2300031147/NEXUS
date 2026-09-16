@@ -219,10 +219,15 @@ export interface ChatMessage {
 }
 
 export interface CollaborationResult {
+    title: string;
+    status: string;
+    consensus_score: number;
     approved_plan: string;
-    participating_nodes: string[];
-    rounds_to_zero_error: number;
-    discussion_transcript: ChatMessage[];
+    participating_nodes: { node_id: string; hostname: string; model: string; memory: any }[];
+    rounds_to_zero_error: number | null;
+    discussion_transcript: any[];
+    summary: string;
+    tasks: { id: string; assigned_node: string; assigned_model: string; title: string; description: string; status: string }[];
 }
 
 // ── Infrastructure / Metrics ──────────────────────────────────────────────────

@@ -54,7 +54,7 @@ class MultiModelConsensusEngine:
                 return str(data.get("content", ""))
         except Exception as e:
             logger.warning(f"Direct API call to {endpoint_url} failed: {e}. Falling back to node synthesis.")
-            return f"[{self.local_node.get('model_name', 'Node')} Insight]: Analyzed project context and verified zero-error architecture constraints."
+            return f"[{self.local_node.get('model_name', 'Node')} ERROR]: model call to {endpoint_url} failed ({e}); no proposal/verdict produced — requires human review."
 
     async def run_collaborative_discussion_and_plan(
         self,
@@ -180,13 +180,16 @@ class MultiModelConsensusEngine:
                 # A reply with no structured verdict is NOT consensus unless
                 # it carries explicit approval signals: a prose rejection
                 # ("I found 3 bugs ...") must count as rejection.
-                approved = True
+                approved = False
                 issues: List[str] = []
                 try:
                     if "{" in review_raw and "}" in review_raw:
                         json_str = review_raw[review_raw.find("{"):review_raw.rfind("}") + 1]
                         parsed_review = json.loads(json_str)
-                        approved = parsed_review.get("approved", True)
+                        if not isinstance(parsed_review, dict):
+                            parsed_review = {}
+                        raw = parsed_review.get("approved", False)
+                        approved = (raw is True) or (isinstance(raw, str) and raw.strip().lower() in ("true", "yes", "approved"))
                         issues = parsed_review.get("issues_found", [])
                     else:
                         text = review_raw.lower()
@@ -198,12 +201,14 @@ class MultiModelConsensusEngine:
                         if not any(signal in text for signal in approval_signals):
                             approved = False
                             issues = ["Reviewer gave no structured approval verdict."]
+                        else:
+                            approved = True
                 except Exception:
                     approved = False
                     issues = ["Failed to parse review JSON. Assuming not approved."]
 
                 return {
-                    "round": verification_round + 1,
+                    "round": verification_round,
                     "node_id": reviewer_node.get("node_id"),
                     "hostname": r_name,
                     "model_name": r_model,
@@ -285,6 +290,7 @@ class MultiModelConsensusEngine:
             ],
             "rounds_to_zero_error": verification_round if all_models_approved else None,
             "discussion_transcript": transcript,
+            "approved_plan": current_proposal_text,
             "summary": (
                 f"Multi-Agent collaborative plan developed by {len(all_nodes)} laptop node(s). "
                 + (

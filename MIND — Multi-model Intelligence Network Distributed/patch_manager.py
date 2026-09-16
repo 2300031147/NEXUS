@@ -1,7 +1,13 @@
+import os
 import re
+import sys
 
-with open("src/llama-kv-swap.cpp", "r") as f:
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CPP = os.path.join(_HERE, "src", "llama-kv-swap.cpp")
+
+with open(_CPP, "r", encoding="utf-8") as f:
     content = f.read()
+original = content
 
 # Modify evict_lru_block
 evict_orig = """    if (!store->write_block((uint64_t) slot, io_buffer, block_bytes)) {
@@ -82,6 +88,7 @@ if evict_orig in content:
     print("Patched evict_lru_block")
 else:
     print("Could not find evict_orig in evict_lru_block")
+    sys.exit(1)
 
 # Modify swap_in_block
 swap_in_orig = """    if (!store->read_block((uint64_t) meta.swap_slot, io_buffer, block_bytes)) {
@@ -114,6 +121,7 @@ if swap_in_orig in content:
     print("Patched swap_in_block read")
 else:
     print("Could not find swap_in_orig in swap_in_block")
+    sys.exit(1)
 
 # Also remove the `store->free_slot` that comes after swap_in_orig in the original code, as we moved it inside the else branch
 free_slot_orig = """    store->free_slot((uint64_t) meta.swap_slot);"""
@@ -122,6 +130,9 @@ if free_slot_orig in content:
     # Let's do it carefully using regex to only replace the one in swap_in_block.
     pass
 
-with open("src/llama-kv-swap.cpp", "w") as f:
-    f.write(content)
+if content != original:
+    with open(_CPP, "w", encoding="utf-8") as f:
+        f.write(content)
+else:
+    print("No changes to write.")
 

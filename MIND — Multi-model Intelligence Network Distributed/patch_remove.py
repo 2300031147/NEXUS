@@ -1,7 +1,13 @@
+import os
 import re
+import sys
 
-with open("src/llama-kv-swap.cpp", "r") as f:
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CPP = os.path.join(_HERE, "src", "llama-kv-swap.cpp")
+
+with open(_CPP, "r", encoding="utf-8") as f:
     content = f.read()
+original = content
 
 # Fix remove_seq
 remove_orig = """        if (it->second.loc == llama_kv_block_loc::COLD_SSD) {
@@ -48,6 +54,10 @@ if remove_orig in content:
     print("Patched remove_seq")
 else:
     print("Could not find remove_orig in remove_seq")
+    sys.exit(1)
 
-with open("src/llama-kv-swap.cpp", "w") as f:
-    f.write(content)
+if content != original:
+    with open(_CPP, "w", encoding="utf-8") as f:
+        f.write(content)
+else:
+    print("No changes to write.")

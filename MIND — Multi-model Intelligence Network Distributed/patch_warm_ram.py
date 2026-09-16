@@ -1,10 +1,12 @@
+import os
 import re
 
-with open("src/llama-kv-swap.h", "r") as f:
-    h_content = f.read()
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_H = os.path.join(_HERE, "src", "llama-kv-swap.h")
 
-with open("src/llama-kv-swap.cpp", "r") as f:
-    cpp_content = f.read()
+with open(_H, "r", encoding="utf-8") as f:
+    h_content = f.read()
+h_original = h_content
 
 # Add to llama_kv_block_meta
 meta_target = "    uint32_t            stream_id = 0;  // stream/device association\n"
@@ -21,7 +23,9 @@ map_target = "    std::unordered_map<llama_kv_block_id, llama_kv_block_meta, lla
 if "std::list<llama_kv_block_id> warm_ram_list;" not in h_content:
     h_content = h_content.replace(map_target, map_target + "    std::list<llama_kv_block_id> warm_ram_list;\n    std::unordered_map<llama_kv_block_id, std::list<llama_kv_block_id>::iterator, llama_kv_block_id_hash> warm_ram_map;\n")
 
-with open("src/llama-kv-swap.h", "w") as f:
-    f.write(h_content)
-
-print("Headers patched")
+if h_content != h_original:
+    with open(_H, "w", encoding="utf-8") as f:
+        f.write(h_content)
+    print("Headers patched")
+else:
+    print("Headers already patched; no changes.")

@@ -44,7 +44,7 @@ export class SwarmOrchestrator {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Content-Length': data.length
+                    'Content-Length': Buffer.byteLength(data)
                 },
                 timeout: 5000
             };
@@ -53,6 +53,10 @@ export class SwarmOrchestrator {
                 let responseData = '';
                 res.on('data', (chunk) => { responseData += chunk; });
                 res.on('end', () => {
+                    if (res.statusCode !== undefined && res.statusCode >= 400) {
+                        reject(new Error(`Agent ${ip}:${port} responded with HTTP ${res.statusCode}`));
+                        return;
+                    }
                     try {
                         const json = JSON.parse(responseData);
                         resolve(json.response || json.plan || responseData);

@@ -84,15 +84,22 @@ def detect_backend_model(
                     break
             result["model_name"] = base
         n_ctx = props.get("n_ctx") or props.get("n_ctx_train")
-        if isinstance(n_ctx, int):
+        if isinstance(n_ctx, bool):
+            pass
+        elif isinstance(n_ctx, int):
             result["n_ctx"] = n_ctx
+        elif isinstance(n_ctx, str) and n_ctx.strip().isdigit():
+            result["n_ctx"] = int(n_ctx.strip())
 
     if isinstance(models, dict):
         data = models.get("data")
         if isinstance(data, list) and data:
-            model_id = data[0].get("id")
-            if model_id:
-                result["model_name"] = model_id
+            # A single registry entry is authoritative; with several, the
+            # first is an arbitrary pick, so keep the /props-derived name.
+            if len(data) == 1:
+                model_id = data[0].get("id")
+                if model_id:
+                    result["model_name"] = model_id
 
     return result
 
@@ -116,7 +123,7 @@ class WorkspaceScope:
         for r in roots or []:
             if not isinstance(r, str) or not r:
                 continue
-            normalized.append(os.path.abspath(os.path.expanduser(r)))
+            normalized.append(os.path.realpath(os.path.abspath(os.path.expanduser(r))))
         self.roots = normalized
         return self.roots
 
@@ -126,7 +133,7 @@ class WorkspaceScope:
     def is_allowed(self, path: str) -> bool:
         if not self.roots:
             return True
-        candidate = os.path.abspath(os.path.expanduser(path))
+        candidate = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
         return any(
             candidate == root or candidate.startswith(root + os.sep)
             for root in self.roots

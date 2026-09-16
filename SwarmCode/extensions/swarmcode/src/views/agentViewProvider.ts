@@ -128,6 +128,7 @@ function fmtTime(ts) {
 }
 
 function renderSessions(sessions) {
+  lastSessions = sessions;
   const root = document.getElementById('root');
   if (!sessions.length) {
     root.innerHTML = '<div class="empty">No active tasks.</div>';
@@ -198,9 +199,15 @@ function renderSessions(sessions) {
 function accept(id) { vscode.postMessage({ command: 'accept', sessionId: id }); }
 function reject(id) { vscode.postMessage({ command: 'reject', sessionId: id }); }
 
+let lastSessions = [];
 window.addEventListener('message', (e) => {
   const msg = e.data;
-  if (msg.command === 'taskUpdate') renderSessions([msg.session]);
+  if (msg.command === 'taskUpdate') {
+    const i = lastSessions.findIndex(s => s.sessionId === msg.session.sessionId);
+    if (i >= 0) lastSessions[i] = msg.session;
+    else lastSessions.push(msg.session);
+    renderSessions(lastSessions);
+  }
   if (msg.command === 'sessions') renderSessions(msg.sessions);
 });
 </script>

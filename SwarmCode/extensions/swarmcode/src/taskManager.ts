@@ -51,6 +51,7 @@ export class DiagnosticsWatcher implements vscode.CodeActionProvider {
 
 export class TaskManager {
     private sessions: Map<string, TaskSession> = new Map();
+    private pendingPlans: Map<string, string> = new Map();
     public readonly onTaskUpdated: vscode.EventEmitter<TaskSession> = new vscode.EventEmitter<TaskSession>();
 
     constructor(
@@ -71,6 +72,7 @@ export class TaskManager {
 
         this.runTask(session, task).catch((e) => {
             session.status = 'failed';
+            session.completedAt = Date.now();
             session.events.push({
                 type: 'TASK_FAILED',
                 nodeId: 'local',
@@ -110,11 +112,17 @@ export class TaskManager {
             },
         });
 
-        session.result = result.approved_plan;
-
-        if (task.approvalRequired) {
+        const approved = result.status === 'APPROVED_BY_CLUSTER';
+        // Only expose the plan as the session result when the cluster approved it;
+        // otherwise hold it aside until the user explicitly accepts the task.
+        session.result = approved ? result.approved_plan : undefined;
+        if (!approved) { this.pendingPlans.set(session.sessionId, result.approved_plan); }
+        if (approved && task.approvalRequired) {
             updateStatus('awaiting_approval');
-            addEvent({ type: 'NODE_APPROVED', nodeId: 'consensus', timestamp: Date.now(), payload: {} });
+            addEvent({ type: 'NODE_APPROVED', nodeId: 'consensus', timestamp: Date.now(), payload: { status: result.status } });
+        } else if (!approved) {
+            updateStatus('awaiting_approval');
+            addEvent({ type: 'NODE_REJECTED', nodeId: 'consensus', timestamp: Date.now(), payload: { status: result.status, summary: result.summary } });
         } else {
             session.completedAt = Date.now();
             updateStatus('applied');
@@ -125,6 +133,8 @@ export class TaskManager {
     public acceptTask(sessionId: string) {
         const session = this.sessions.get(sessionId);
         if (!session || session.status !== 'awaiting_approval') { return; }
+        const plan = this.pendingPlans.get(sessionId);
+        if (plan !== undefined) { session.result = plan; this.pendingPlans.delete(sessionId); }
         session.status = 'applied';
         session.completedAt = Date.now();
         session.events.push({ type: 'TASK_COMPLETED', nodeId: 'orchestrator', timestamp: Date.now(), payload: {} });
@@ -134,6 +144,7 @@ export class TaskManager {
     public rejectTask(sessionId: string) {
         const session = this.sessions.get(sessionId);
         if (!session) { return; }
+        this.pendingPlans.delete(sessionId);
         session.status = 'rejected';
         session.completedAt = Date.now();
         session.events.push({ type: 'NODE_REJECTED', nodeId: 'orchestrator', timestamp: Date.now(), payload: {} });

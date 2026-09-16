@@ -24,8 +24,13 @@ export class NexusClient {
     // ── Low-level helpers ─────────────────────────────────────────────────────
 
     /** Pick http or https transport based on the URL scheme. */
-    private transport(): typeof http | typeof https {
-        return this.baseUrl.startsWith('https') ? https : http;
+    private transport(u: string = this.baseUrl): typeof http | typeof https {
+        return u.startsWith('https') ? https : http;
+    }
+
+    /** Build a node URL preserving this client's scheme (http/https). */
+    public nodeUrl(host: string, port: number): string {
+        return `${new URL(this.baseUrl).protocol}//${host}:${port}`;
     }
 
     private async get<T>(path: string, overrideHostUrl?: string): Promise<T> {
@@ -40,7 +45,7 @@ export class NexusClient {
                 headers: { 'Accept': 'application/json' },
                 timeout: 10000,
             };
-            const req = this.transport().request(options, (res) => {
+            const req = this.transport(baseUrlToUse).request(options, (res) => {
                 res.setEncoding('utf8');
                 let data = '';
                 res.on('data', (chunk) => { data += chunk; });
@@ -76,7 +81,7 @@ export class NexusClient {
                 },
                 timeout: 120000,
             };
-            const req = this.transport().request(options, (res) => {
+            const req = this.transport(baseUrlToUse).request(options, (res) => {
                 res.setEncoding('utf8');
                 let responseData = '';
                 res.on('data', (chunk) => { responseData += chunk; });
@@ -132,7 +137,7 @@ export class NexusClient {
             timeout: 300000,
         };
 
-        const req = this.transport().request(options, (res) => {
+        const req = this.transport(baseUrlToUse).request(options, (res) => {
             res.setEncoding('utf8');
             let buffer = '';
             res.on('data', (chunk: string) => {
@@ -188,8 +193,8 @@ export class NexusClient {
     }
 
     /** POST /v1/node/settings — update local node settings. */
-    public async updateNodeSettings(settings: Partial<NodeInfo>): Promise<{status: string, node: NodeInfo}> {
-        return this.post<{status: string, node: NodeInfo}>('/v1/node/settings', settings);
+    public async updateNodeSettings(settings: Partial<NodeInfo>, overrideHostUrl?: string): Promise<{status: string, node: NodeInfo}> {
+        return this.post<{status: string, node: NodeInfo}>('/v1/node/settings', settings, overrideHostUrl);
     }
 
     /** GET /v1/cluster/peers — all discovered nodes. */
@@ -248,7 +253,7 @@ export class NexusClient {
         }
         
         // Use override URL to cleanly fetch context without mutating shared client state
-        const targetUrl = `http://${node.api_host}:${node.api_port}`;
+        const targetUrl = this.nodeUrl(node.api_host, node.api_port);
         return await this.get<IngestedContext>('/v1/cluster/context', targetUrl);
     }
 

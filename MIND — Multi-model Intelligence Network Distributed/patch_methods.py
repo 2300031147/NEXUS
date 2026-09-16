@@ -1,7 +1,15 @@
+import os
 import re
+import sys
 
-with open("src/llama-kv-swap.cpp", "r") as f:
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CPP = os.path.join(_HERE, "src", "llama-kv-swap.cpp")
+
+with open(_CPP, "r", encoding="utf-8") as f:
     content = f.read()
+original = content
+
+failures = []
 
 # 1. Patch remove_seq fractured block
 old_remove = """        else if ((p1 < 0 && block_end > p0) || (it->first.pos_start < p1 && block_end > p0)) {
@@ -27,7 +35,13 @@ new_remove = """        else if ((p1 < 0 && block_end > p0) || (it->first.pos_st
             }
             auto lru_it = lru_map.find(it->first);"""
 
-content = content.replace(old_remove, new_remove)
+if old_remove in content:
+    # NOTE: old_div below is textually identical, so this one replace
+    # patches both the remove_seq and div_seq sites.
+    content = content.replace(old_remove, new_remove)
+    print("Patched remove_seq + div_seq fractured blocks")
+else:
+    failures.append("old_remove")
 
 # 2. Patch div_seq fractured block
 old_div = """        else if ((p1 < 0 && block_end > p0) || (it->first.pos_start < p1 && block_end > p0)) {
@@ -93,8 +107,19 @@ new_cp = """            if (meta.loc == llama_kv_block_loc::COLD_SSD) {
             }
             meta.access_ts = ++current_ts;"""
 
-content = content.replace(old_cp, new_cp)
+if old_cp in content:
+    content = content.replace(old_cp, new_cp)
+    print("Patched cp_seq")
+else:
+    failures.append("old_cp")
 
-with open("src/llama-kv-swap.cpp", "w") as f:
-    f.write(content)
-print("Methods patched.")
+if failures:
+    print(f"Could not find: {', '.join(failures)}")
+    sys.exit(1)
+
+if content != original:
+    with open(_CPP, "w", encoding="utf-8") as f:
+        f.write(content)
+    print("Methods patched.")
+else:
+    print("No changes to write.")

@@ -20,8 +20,12 @@ class ClusterDaemon:
         self.peers = {} # node_id -> { "ip": str, "port": int, "role": str, "model": str, "last_seen": float }
         self.lock = threading.Lock()
         self.running = False
-        
+        self.listen_thread = None
+        self.broadcast_thread = None
+
     def start(self):
+        if self.running:
+            return
         self.running = True
         self.listen_thread = threading.Thread(target=self._listen, daemon=True)
         self.broadcast_thread = threading.Thread(target=self._broadcast, daemon=True)

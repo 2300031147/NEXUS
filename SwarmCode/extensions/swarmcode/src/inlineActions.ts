@@ -29,19 +29,20 @@ export class NexusCodeLensProvider implements vscode.CodeLensProvider {
     public provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
         const lenses: vscode.CodeLens[] = [];
 
-        // Detect function/method/class declarations
-        const funcRegex = /^(?:export\s+)?(?:async\s+)?(?:function|class|def|func|fn|pub fn|public|private|protected|static)\s+(\w+)/gm;
+        // Detect function/method/class declarations and arrow-assigned symbols
+        const funcRegex = /^(?:export\s+)?(?:async\s+)?(?:function|class|def|func|fn|pub fn|public|private|protected|static)\s+(\w+)|(?:^|\s)(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|(?:[\w$]+)\s*=>)/gm;
         const text = document.getText();
         let match: RegExpExecArray | null;
 
         while ((match = funcRegex.exec(text)) !== null) {
-            const pos = document.positionAt(match.index);
+            const name = match[1] ?? match[2];
+            const pos = document.positionAt(match.index + match[0].indexOf(name));
             const range = new vscode.Range(pos, pos);
 
             lenses.push(new vscode.CodeLens(range, {
                 title: '$(hubot) NEXUS: Explain | Fix | Refactor | Ask Team',
                 command: 'nexus.showInlineMenu',
-                arguments: [document.uri, range, match[1]],
+                arguments: [document.uri, range, name],
             }));
         }
 
@@ -74,7 +75,10 @@ export async function showInlineMenu(
     if (!choice) { return; }
 
     const doc = await vscode.workspace.openTextDocument(uri);
-    const selection = doc.getText(); // full file for context
+    // Send the symbol at the requested range; fall back to the full file.
+    let selection = '';
+    try { selection = doc.getText(range); } catch { /* invalid range */ }
+    if (!selection) { selection = doc.getText(); }
 
     const promptMap: Record<string, string> = {
         explain: `Explain the function/class "${symbolName}" in detail.`,

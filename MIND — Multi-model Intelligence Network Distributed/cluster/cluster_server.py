@@ -223,11 +223,21 @@ class SwarmNodeService:
                     content_length = int(self.headers.get("Content-Length", 0))
                 except (ValueError, TypeError):
                     content_length = 0
+                if content_length < 0:
+                    content_length = 0
+                if content_length > 32 * 1024 * 1024:
+                    self._send_json(413, {
+                        "status": "rejected",
+                        "message": "Request body too large.",
+                    })
+                    return
                 raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
                 try:
                     payload = json.loads(raw_body.decode("utf-8"))
+                    if not isinstance(payload, dict):
+                        payload = {}
                 except Exception:
-                    payload: Dict[str, Any] = {}
+                    payload = {}
 
                 base_path = self.path.split('?')[0]
 
@@ -242,8 +252,8 @@ class SwarmNodeService:
                             "scope": service.workspace_scope.to_dict(),
                         })
                         return
-                    # Ingest workspace project context
-                    service.project_context = payload
+                    # Ingest workspace project context (copy: never alias the request dict)
+                    service.project_context = {**payload, "files": list(payload.get("files", []))}
                     logger.info(f"Ingested workspace context: {len(payload.get('files', []))} files.")
                     self._send_json(200, {
                         "status": "success",
@@ -289,6 +299,13 @@ class SwarmNodeService:
                                 active_peers=active_peers,
                             )
                         )
+                    except Exception as e:
+                        logger.exception("Collaborative discussion failed")
+                        self._send_json(502, {
+                            "status": "error",
+                            "message": f"Collaborative discussion failed: {e}",
+                        })
+                        return
                     finally:
                         service._collab_lock.release()
                     self._send_json(200, plan_result)

@@ -84,10 +84,21 @@ export class ContextEngine {
         const related: Set<string> = new Set();
 
         // Method 1: scan import statements in the active document
-        const doc = await vscode.workspace.openTextDocument(uri);
+        let doc;
+        try {
+            doc = await vscode.workspace.openTextDocument(uri);
+        } catch {
+            return [];
+        }
         const text = doc.getText();
-        const importRegex = /(?:import|require|from)\s+['"]([^'"]+)['"]/g;
+        const importPatterns = [
+            /import\s+(?:[\w*{}\s,]+\s+from\s+)?['"]([^'"]+)['"]/g,
+            /export\s+(?:[\w*{}\s,]+\s+from\s+)['"]([^'"]+)['"]/g,
+            /require\(\s*['"]([^'"]+)['"]\s*\)/g,
+            /import\(\s*['"]([^'"]+)['"]\s*\)/g,
+        ];
         let match;
+        for (const importRegex of importPatterns) {
         while ((match = importRegex.exec(text)) !== null) {
             const importPath = match[1];
             if (!importPath.startsWith('.')) { continue; }
@@ -118,6 +129,7 @@ export class ContextEngine {
                     }
                 } catch { /* not found */ }
             }
+        }
         }
 
         // Method 2: workspace symbol search using the filename stem

@@ -109,12 +109,13 @@ async def get_node_info():
 async def get_cluster_peers():
     await asyncio.to_thread(ensure_backend)
     active = daemon.get_peers()
+    scheme = os.getenv("SWARM_API_SCHEME", "http").rstrip(":/")
     peers_list = []
     # Add self first, just like discovery.py does
     peers_list.append({
         "node_id": NODE_ID,
         "hostname": socket.gethostname(),
-        "api_url": f"http://{LOCAL_IP}:{PORT}",
+        "api_url": f"{scheme}://{LOCAL_IP}:{PORT}",
         "api_host": LOCAL_IP,
         "api_port": PORT,
         "role_description": NODE_ROLE,
@@ -124,15 +125,21 @@ async def get_cluster_peers():
     for nid, info in active.items():
         peers_list.append({
             "node_id": nid,
-            "hostname": nid,
-            "api_url": f"http://{info['ip']}:{info['port']}",
+            "hostname": info.get("hostname", nid),
+            "api_url": f"{scheme}://{info['ip']}:{info['port']}",
             "api_host": info["ip"],
             "api_port": info["port"],
             "role_description": info["role"],
             "model_name": info["model"],
             "vram_gb": 0.0
         })
-    return {"peers": peers_list}
+    # Contract shape (swarm-host/1): nodes list; `peers` kept as an alias.
+    return {
+        "cluster_id": "swarm-default",
+        "total_nodes": len(peers_list),
+        "nodes": peers_list,
+        "peers": peers_list,
+    }
 
 @app.post("/v1/agent/discuss")
 async def agent_discuss(req: DiscussRequest):
@@ -150,8 +157,8 @@ async def chat_completions(req: dict):
     if BACKEND["reachable"]:
         try:
             return await asyncio.to_thread(_proxy_chat, req)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Backend proxy failed, falling back to mock: {e}")
 
     # Mock OpenAI completions endpoint to allow the agent to participate in the swarm consensus loop
     messages = req.get("messages", [])

@@ -110,14 +110,20 @@ export class SwarmWebviewPanel {
                                 return;
                             }
                             peerList.innerHTML = '';
-                            message.peers.forEach(peer => {
+                            message.peers.forEach((peer: any) => {
                                 const card = document.createElement('div');
                                 card.className = 'peer-card';
-                                card.innerHTML = \`
-                                    <div class="role">\${peer.role.toUpperCase()}</div>
-                                    <div>\${peer.model}</div>
-                                    <div style="font-size: 0.8em; opacity: 0.7;">\${peer.ip}:\${peer.port}</div>
-                                \`;
+                                const roleDiv = document.createElement('div');
+                                roleDiv.className = 'role';
+                                roleDiv.textContent = String(peer.role).toUpperCase();
+                                const modelDiv = document.createElement('div');
+                                modelDiv.textContent = peer.model;
+                                const addrDiv = document.createElement('div');
+                                addrDiv.setAttribute('style', 'font-size: 0.8em; opacity: 0.7;');
+                                addrDiv.textContent = peer.ip + ':' + peer.port;
+                                card.appendChild(roleDiv);
+                                card.appendChild(modelDiv);
+                                card.appendChild(addrDiv);
                                 peerList.appendChild(card);
                             });
                         }

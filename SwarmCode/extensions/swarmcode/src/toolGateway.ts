@@ -39,6 +39,8 @@ export class ToolGateway {
                 case 'run_command': return await this.runInTerminal(request.command ?? '');
                 case 'get_diagnostics': return this.getDiagnostics(request.path);
                 case 'open_file': return await this.openEditor(request.path ?? '');
+                case 'run_tests': return await this.runTests();
+                case 'security_analysis': return this.getDiagnostics(request.path);
                 default:
                     return { success: false, error: `Unknown tool type: ${request.type}` };
             }
@@ -55,9 +57,11 @@ export class ToolGateway {
         return { success: true, data: doc.getText() };
     }
 
+    private diffCounter = 0;
+
     /** Stage a file edit as a diff proposal rather than writing directly. */
     public async proposeEdit(filePath: string, proposedContent: string, description?: string): Promise<ToolResult> {
-        const id = `diff-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const id = `diff-${Date.now()}-${(this.diffCounter++).toString(36)}-${Math.random().toString(36).slice(2)}`;
         let originalContent = '';
         try {
             const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
@@ -98,12 +102,15 @@ export class ToolGateway {
         const uri = vscode.Uri.file(proposal.path);
         try {
             const doc = await vscode.workspace.openTextDocument(uri);
+            // Refuse to overwrite edits made after the proposal was created.
+            if (doc.getText() !== proposal.originalContent) { return false; }
             // Use the last line/char to avoid going past EOF
             const lastLine = doc.lineCount > 0 ? doc.lineCount - 1 : 0;
             const lastChar = doc.lineCount > 0 ? doc.lineAt(lastLine).text.length : 0;
             edit.replace(uri, new vscode.Range(0, 0, lastLine, lastChar), proposal.proposedContent);
         } catch {
-            // New file
+            // New file — only create when nothing was there at proposal time.
+            if (proposal.originalContent !== '') { return false; }
             edit.createFile(uri, { contents: Buffer.from(proposal.proposedContent, 'utf-8') });
         }
         const ok = await vscode.workspace.applyEdit(edit);
@@ -130,7 +137,9 @@ export class ToolGateway {
     private async searchWorkspace(query: string): Promise<ToolResult> {
         const results = await vscode.workspace.findFiles(`**/*`, '**/node_modules/**', 1000);
         const matched: string[] = [];
+        const MAX_MATCHES = 200;
         for (const uri of results) {
+            if (matched.length >= MAX_MATCHES) { break; } // cap: never scan unboundedly
             try {
                 const doc = await vscode.workspace.openTextDocument(uri);
                 if (doc.getText().includes(query)) {
@@ -139,6 +148,28 @@ export class ToolGateway {
             } catch { /* skip */ }
         }
         return { success: true, data: matched };
+    }
+
+    /** Run the workspace test suite (`npm test`) in a terminal. */
+    private async runTests(): Promise<ToolResult> {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) {
+            return { success: false, error: 'No workspace folder open.' };
+        }
+        const pkgUri = vscode.Uri.joinPath(folders[0].uri, 'package.json');
+        try {
+            const raw = await vscode.workspace.fs.readFile(pkgUri);
+            const pkg = JSON.parse(Buffer.from(raw).toString('utf-8'));
+            if (!pkg?.scripts?.test) {
+                return { success: false, error: 'No test script defined in package.json.' };
+            }
+        } catch {
+            return { success: false, error: 'Cannot read package.json test script.' };
+        }
+        const terminal = vscode.window.activeTerminal ?? vscode.window.createTerminal('NEXUS Tests');
+        terminal.show(true);
+        terminal.sendText('npm test');
+        return { success: true, data: 'Test suite started in terminal: npm test' };
     }
 
     private async getGitDiff(): Promise<ToolResult> {
