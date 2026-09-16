@@ -103,6 +103,7 @@ class SwarmDiscovery:
             pass
 
         self._listen_sock.bind(("", self.discovery_port))
+        self._listen_sock.settimeout(1.0)
 
         # Join multicast group
         try:
@@ -175,7 +176,10 @@ class SwarmDiscovery:
             try:
                 if not self._listen_sock:
                     break
-                data, addr = self._listen_sock.recvfrom(65535)
+                try:
+                    data, addr = self._listen_sock.recvfrom(65535)
+                except socket.timeout:
+                    continue
                 if not data:
                     continue
                 parsed = json.loads(data.decode("utf-8"))

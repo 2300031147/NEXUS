@@ -197,21 +197,22 @@ class SwarmNodeService:
                 self.wfile.write(body)
 
             def do_GET(self) -> None:
-                if self.path == "/v1/node/info" or self.path == "/v1/node/status":
+                base_path = self.path.split('?')[0]
+                if base_path == "/v1/node/info" or base_path == "/v1/node/status":
                     service.refresh_backend()
                     self._send_json(200, service.node_info.to_dict())
-                elif self.path == "/v1/cluster/peers":
+                elif base_path == "/v1/cluster/peers":
                     peers = service.discovery.get_active_peers()
                     self._send_json(200, {
                         "cluster_id": "swarm-default",
                         "total_nodes": len(peers),
                         "nodes": peers
                     })
-                elif self.path == "/v1/cluster/context":
+                elif base_path == "/v1/cluster/context":
                     self._send_json(200, service.project_context)
-                elif self.path == "/v1/cluster/scope":
+                elif base_path == "/v1/cluster/scope":
                     self._send_json(200, service.workspace_scope.to_dict())
-                elif self.path == "/v1/cluster/topology":
+                elif base_path == "/v1/cluster/topology":
                     self._send_json(200, service.get_topology())
                 else:
                     # Proxy to llama-server
@@ -228,7 +229,9 @@ class SwarmNodeService:
                 except Exception:
                     payload: Dict[str, Any] = {}
 
-                if self.path == "/v1/cluster/ingest":
+                base_path = self.path.split('?')[0]
+
+                if base_path == "/v1/cluster/ingest":
                     # Enforce the user-granted workspace scope first
                     rejected = service.workspace_scope.check_files(payload.get("files", []))
                     if rejected:
@@ -248,7 +251,7 @@ class SwarmNodeService:
                         "file_count": len(payload.get("files", []))
                     })
 
-                elif self.path == "/v1/cluster/scope":
+                elif base_path == "/v1/cluster/scope":
                     # Grant (or clear) the folders/files the user gives to the models
                     if payload.get("clear"):
                         service.workspace_scope.clear()
@@ -256,7 +259,7 @@ class SwarmNodeService:
                         service.workspace_scope.set_roots(payload.get("roots", []))
                     self._send_json(200, service.workspace_scope.to_dict())
 
-                elif self.path == "/v1/node/settings":
+                elif base_path == "/v1/node/settings":
                     # Update local node configuration settings (e.g., from native UI)
                     if "role_description" in payload:
                         service.role_description = payload["role_description"]
@@ -266,7 +269,7 @@ class SwarmNodeService:
                         service.node_info.model_name = payload["model_name"]
                     self._send_json(200, {"status": "success", "node": service.node_info.to_dict()})
 
-                elif self.path == "/v1/cluster/collaborate" or self.path == "/v1/cluster/discuss":
+                elif base_path == "/v1/cluster/collaborate" or base_path == "/v1/cluster/discuss":
                     # Run multi-model deliberation & zero-error cross-verification loop
                     if not service._collab_lock.acquire(blocking=False):
                         self._send_json(409, {
@@ -290,7 +293,7 @@ class SwarmNodeService:
                         service._collab_lock.release()
                     self._send_json(200, plan_result)
 
-                elif self.path == "/v1/chat/completions":
+                elif base_path == "/v1/chat/completions":
                     # Proxy standard chat completions directly to llama backend
                     self._proxy_post(self.path, raw_body)
                 else:

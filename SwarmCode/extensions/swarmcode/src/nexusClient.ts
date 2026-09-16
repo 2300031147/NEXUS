@@ -28,9 +28,10 @@ export class NexusClient {
         return this.baseUrl.startsWith('https') ? https : http;
     }
 
-    private async get<T>(path: string): Promise<T> {
+    private async get<T>(path: string, overrideHostUrl?: string): Promise<T> {
         return new Promise((resolve, reject) => {
-            const url = new URL(this.baseUrl + path);
+            const baseUrlToUse = overrideHostUrl ? overrideHostUrl.replace(/\/$/, '') : this.baseUrl;
+            const url = new URL(baseUrlToUse + path);
             const options = {
                 hostname: url.hostname,
                 port: parseInt(url.port || (url.protocol === 'https:' ? '443' : '8090'), 10),
@@ -40,6 +41,7 @@ export class NexusClient {
                 timeout: 10000,
             };
             const req = this.transport().request(options, (res) => {
+                res.setEncoding('utf8');
                 let data = '';
                 res.on('data', (chunk) => { data += chunk; });
                 res.on('end', () => {
@@ -57,10 +59,11 @@ export class NexusClient {
         });
     }
 
-    private async post<T>(path: string, body: unknown): Promise<T> {
+    private async post<T>(path: string, body: unknown, overrideHostUrl?: string): Promise<T> {
         return new Promise((resolve, reject) => {
             const data = JSON.stringify(body);
-            const url = new URL(this.baseUrl + path);
+            const baseUrlToUse = overrideHostUrl ? overrideHostUrl.replace(/\/$/, '') : this.baseUrl;
+            const url = new URL(baseUrlToUse + path);
             const options = {
                 hostname: url.hostname,
                 port: parseInt(url.port || (url.protocol === 'https:' ? '443' : '8090'), 10),
@@ -74,6 +77,7 @@ export class NexusClient {
                 timeout: 120000,
             };
             const req = this.transport().request(options, (res) => {
+                res.setEncoding('utf8');
                 let responseData = '';
                 res.on('data', (chunk) => { responseData += chunk; });
                 res.on('end', () => {
@@ -96,9 +100,10 @@ export class NexusClient {
      * Streaming POST — yields text chunks as they arrive (SSE / newline-delimited JSON).
      * Uses a proper queue + async-notifier so the generator never spin-polls.
      */
-    public postStream(path: string, body: unknown): AsyncIterableIterator<string> {
+    public postStream(path: string, body: unknown, overrideHostUrl?: string): AsyncIterableIterator<string> {
         const data = JSON.stringify(body);
-        const url = new URL(this.baseUrl + path);
+        const baseUrlToUse = overrideHostUrl ? overrideHostUrl.replace(/\/$/, '') : this.baseUrl;
+        const url = new URL(baseUrlToUse + path);
 
         // Queue of chunks + a waiter slot
         const queue: string[] = [];
@@ -128,9 +133,10 @@ export class NexusClient {
         };
 
         const req = this.transport().request(options, (res) => {
+            res.setEncoding('utf8');
             let buffer = '';
-            res.on('data', (chunk: Buffer) => {
-                buffer += chunk.toString('utf-8');
+            res.on('data', (chunk: string) => {
+                buffer += chunk;
                 const lines = buffer.split('\n');
                 buffer = lines.pop() ?? '';
                 for (const line of lines) {
@@ -241,14 +247,9 @@ export class NexusClient {
             throw new Error(`Node ${nodeId} not found in topology.`);
         }
         
-        // Temporarily change base URL or make direct request
-        const originalUrl = this.baseUrl;
-        try {
-            this.setHostUrl(`http://${node.api_host}:${node.api_port}`);
-            return await this.get<IngestedContext>('/v1/cluster/context');
-        } finally {
-            this.setHostUrl(originalUrl);
-        }
+        // Use override URL to cleanly fetch context without mutating shared client state
+        const targetUrl = `http://${node.api_host}:${node.api_port}`;
+        return await this.get<IngestedContext>('/v1/cluster/context', targetUrl);
     }
 
     // ── Consensus / Collaboration ─────────────────────────────────────────────
