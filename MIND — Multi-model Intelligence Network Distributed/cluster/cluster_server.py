@@ -216,7 +216,10 @@ class SwarmNodeService:
                     self._proxy_get(self.path)
 
             def do_POST(self):
-                content_length = int(self.headers.get("Content-Length", 0))
+                try:
+                    content_length = int(self.headers.get("Content-Length", 0))
+                except (ValueError, TypeError):
+                    content_length = 0
                 raw_body = self.rfile.read(content_length) if content_length > 0 else b"{}"
                 try:
                     payload = json.loads(raw_body.decode("utf-8"))
@@ -286,15 +289,19 @@ class SwarmNodeService:
                 try:
                     req = urllib.request.Request(target_url, headers={"Accept": "application/json"})
                     with urllib.request.urlopen(req, timeout=30) as resp:
-                        data = resp.read()
                         self.send_response(resp.status)
                         for k, v in resp.headers.items():
-                            if k.lower() not in ("content-length", "transfer-encoding"):
+                            if k.lower() not in ("transfer-encoding", "connection"):
                                 self.send_header(k, v)
+                        self.send_header("Connection", "close")
                         self._send_cors_headers()
-                        self.send_header("Content-Length", str(len(data)))
                         self.end_headers()
-                        self.wfile.write(data)
+                        while True:
+                            chunk = resp.read(4096)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
                 except Exception as e:
                     self._send_json(502, {"error": f"Upstream llama.cpp server error: {e}"})
 
@@ -307,15 +314,19 @@ class SwarmNodeService:
                         headers={"Content-Type": "application/json", "Accept": "application/json"}
                     )
                     with urllib.request.urlopen(req, timeout=120) as resp:
-                        data = resp.read()
                         self.send_response(resp.status)
                         for k, v in resp.headers.items():
-                            if k.lower() not in ("content-length", "transfer-encoding"):
+                            if k.lower() not in ("transfer-encoding", "connection"):
                                 self.send_header(k, v)
+                        self.send_header("Connection", "close")
                         self._send_cors_headers()
-                        self.send_header("Content-Length", str(len(data)))
                         self.end_headers()
-                        self.wfile.write(data)
+                        while True:
+                            chunk = resp.read(4096)
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            self.wfile.flush()
                 except Exception as e:
                     self._send_json(502, {"error": f"Upstream llama.cpp server error: {e}"})
 

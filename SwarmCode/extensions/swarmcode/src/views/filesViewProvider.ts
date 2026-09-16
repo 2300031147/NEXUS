@@ -133,7 +133,7 @@ function shorten(p) {
 
 window.addEventListener('message', (e) => {
   const msg = e.data;
-  if (msg.command === 'error') { document.getElementById('openFiles').innerHTML = '<div class="empty">⚠ ' + msg.message + '</div>'; return; }
+  if (msg.command === 'error') { document.getElementById('openFiles').innerHTML = '<div class="empty">⚠ ' + escape(msg.message) + '</div>'; return; }
   if (msg.command !== 'update') return;
   const { openFiles } = msg;
   allOpenFiles = openFiles;

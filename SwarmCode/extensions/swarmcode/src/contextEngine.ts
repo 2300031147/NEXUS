@@ -93,12 +93,29 @@ export class ContextEngine {
             if (!importPath.startsWith('.')) { continue; }
             const dir = path.dirname(uri.fsPath);
             const abs = path.resolve(dir, importPath);
-            for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.py', '.cpp', '.h']) {
-                const candidate = abs + ext;
+            const candidatePaths = [abs, ...['.ts', '.tsx', '.js', '.jsx', '.py', '.cpp', '.h'].map(ext => abs + ext)];
+            let found = false;
+            for (const candidate of candidatePaths) {
                 try {
-                    await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
-                    related.add(candidate);
-                    break;
+                    const stat = await vscode.workspace.fs.stat(vscode.Uri.file(candidate));
+                    if (stat.type === vscode.FileType.File) {
+                        related.add(candidate);
+                        found = true;
+                        break;
+                    } else if (stat.type === vscode.FileType.Directory) {
+                        for (const ext of ['.ts', '.tsx', '.js', '.jsx', '.py']) {
+                            const idx = path.join(candidate, 'index' + ext);
+                            try {
+                                const idxStat = await vscode.workspace.fs.stat(vscode.Uri.file(idx));
+                                if (idxStat.type === vscode.FileType.File) {
+                                    related.add(idx);
+                                    found = true;
+                                    break;
+                                }
+                            } catch { /* skip */ }
+                        }
+                        if (found) break;
+                    }
                 } catch { /* not found */ }
             }
         }

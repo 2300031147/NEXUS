@@ -30,7 +30,7 @@ export class DiagnosticsWatcher implements vscode.CodeActionProvider {
         return context.diagnostics
             .filter((d) => d.severity === vscode.DiagnosticSeverity.Error || d.severity === vscode.DiagnosticSeverity.Warning)
             .map((d) => {
-                const action = new vscode.CodeAction(`NEXUS: Fix — ${d.message.slice(0, 60)}`, vscode.CodeActionKind.QuickFix);
+                const action = new vscode.CodeAction(`NEXUS: Fix — ${d.message.split('\n')[0].slice(0, 60)}`, vscode.CodeActionKind.QuickFix);
                 action.command = {
                     command: 'nexus.fixDiagnostic',
                     title: 'Fix with NEXUS',

@@ -11,6 +11,14 @@
   "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
+    "chatParticipants": [
+      {
+        "id": "nexus",
+        "name": "nexus",
+        "description": "NEXUS MIND Cluster Agent",
+        "isDefault": true
+      }
+    ],
 
     "configuration": {
       "title": "NEXUS",
@@ -55,19 +63,13 @@
         {
           "id": "nexus",
           "title": "NEXUS",
-          "icon": "$(hubot)"
+          "icon": "$(comment-discussion)"
         }
       ]
     },
 
     "views": {
       "nexus": [
-        {
-          "type": "webview",
-          "id": "nexus.chatView",
-          "name": "Chat",
-          "icon": "$(comment-discussion)"
-        },
         {
           "type": "webview",
           "id": "nexus.agentView",
@@ -81,7 +83,11 @@
           "icon": "$(tasklist)"
         },
         {
-          "type": "webview",
+          "id": "nexus.clusterView",
+          "name": "Cluster",
+          "icon": "$(server)"
+        },
+        {
           "id": "nexus.contextView",
           "name": "Context",
           "icon": "$(file-code)"
@@ -91,12 +97,6 @@
           "id": "nexus.filesView",
           "name": "Files",
           "icon": "$(folder)"
-        },
-        {
-          "type": "webview",
-          "id": "nexus.clusterView",
-          "name": "Cluster",
-          "icon": "$(server)"
         },
         {
           "type": "webview",
@@ -148,6 +148,16 @@
       {
         "command": "nexus.reviewWorkspace",
         "title": "NEXUS: Review Workspace",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.editNodeSettings",
+        "title": "NEXUS: Edit Node Settings",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.selectNode",
+        "title": "NEXUS: Select Node",
         "category": "NEXUS"
       },
       {
@@ -272,12 +282,23 @@
           "group": "nexus_file@1"
         },
         {
+          "command": "nexus.reviewWorkspace",
+          "group": "nexus_file@2"
+        },
+        {
           "command": "nexus.runConsensus",
           "group": "nexus_team@1"
         },
         {
           "command": "nexus.ask",
           "group": "nexus_team@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "nexus.editNodeSettings",
+          "when": "view == nexus.clusterView && viewItem == settingItem",
+          "group": "inline"
         }
       ]
     },

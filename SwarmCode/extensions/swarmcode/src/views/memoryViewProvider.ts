@@ -94,7 +94,7 @@ window.addEventListener('message', (e) => {
   const root = document.getElementById('root');
 
   if (msg.command === 'error') {
-    root.innerHTML = '<div class="empty">⚠ ' + msg.message + '</div>';
+    root.innerHTML = '<div class="empty">⚠ ' + escape(msg.message) + '</div>';
     return;
   }
   if (msg.command !== 'update') return;

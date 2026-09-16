@@ -265,9 +265,10 @@ class MultiModelConsensusEngine:
         # Stage 3: Synthesize finalized zero-error implementation plan.
         # A plan that exhausted its rounds with objections outstanding is
         # honestly reported as needing review, never as approved.
+        last_round = max((entry.get("round", 0) for entry in transcript if entry.get("type") == "verification_pass"), default=0)
         unresolved_count = sum(
             1 for entry in transcript
-            if entry.get("type") == "verification_pass" and not entry.get("approved")
+            if entry.get("type") == "verification_pass" and entry.get("round") == last_round and not entry.get("approved")
         )
         final_plan = {
             "title": f"Swarm Plan: {user_prompt[:80]}",

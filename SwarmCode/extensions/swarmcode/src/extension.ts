@@ -5,9 +5,8 @@ import { GitBridge } from './gitBridge';
 import { ToolGateway } from './toolGateway';
 import { TaskManager, DiagnosticsWatcher } from './taskManager';
 
-import { ChatViewProvider } from './views/chatViewProvider';
-import { ClusterViewProvider } from './views/clusterViewProvider';
-import { ContextViewProvider } from './views/contextViewProvider';
+import { ClusterTreeProvider, ClusterTreeItem } from './views/clusterTreeProvider';
+import { ContextTreeProvider } from './views/contextTreeProvider';
 import { AgentViewProvider } from './views/agentViewProvider';
 import { TaskViewProvider } from './views/taskViewProvider';
 import { InfrastructureViewProvider } from './views/infrastructureViewProvider';
@@ -15,16 +14,13 @@ import { MemoryViewProvider } from './views/memoryViewProvider';
 import { FilesViewProvider } from './views/filesViewProvider';
 
 import { NexusCodeLensProvider, showInlineMenu } from './inlineActions';
-import { NexusTask } from './types';
+import { NexusTask, ChatMessage } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // NEXUS Extension — activation entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function activate(context: vscode.ExtensionContext) {
-    console.log('[NEXUS] Extension activating…');
-
-    // ── Core services ────────────────────────────────────────────────────────
     const config = vscode.workspace.getConfiguration('nexus');
     const hostUrl = config.get<string>('hostUrl') ?? 'http://localhost:8090';
 
@@ -37,9 +33,8 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(taskManager, diagWatcher, toolGateway);
 
     // ── 8 native view providers ──────────────────────────────────────────────
-    const chatProvider    = new ChatViewProvider(context.extensionUri, nexusClient, contextEng);
-    const clusterProvider = new ClusterViewProvider(context.extensionUri, nexusClient);
-    const ctxProvider     = new ContextViewProvider(context.extensionUri, nexusClient, contextEng);
+    const clusterProvider = new ClusterTreeProvider(nexusClient);
+    const ctxProvider     = new ContextTreeProvider(contextEng);
     const agentProvider   = new AgentViewProvider(context.extensionUri, taskManager);
     const taskProvider    = new TaskViewProvider(context.extensionUri, taskManager);
     const infraProvider   = new InfrastructureViewProvider(context.extensionUri, nexusClient);
@@ -47,14 +42,32 @@ export function activate(context: vscode.ExtensionContext) {
     const filesProvider   = new FilesViewProvider(context.extensionUri, nexusClient, contextEng);
 
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider(ChatViewProvider.viewId,          chatProvider,    { webviewOptions: { retainContextWhenHidden: true } }),
-        vscode.window.registerWebviewViewProvider(ClusterViewProvider.viewId,       clusterProvider, { webviewOptions: { retainContextWhenHidden: true } }),
-        vscode.window.registerWebviewViewProvider(ContextViewProvider.viewId,       ctxProvider,     { webviewOptions: { retainContextWhenHidden: true } }),
+        vscode.window.registerTreeDataProvider('nexus.clusterView', clusterProvider),
+        vscode.window.registerTreeDataProvider('nexus.contextView', ctxProvider),
         vscode.window.registerWebviewViewProvider(AgentViewProvider.viewId,         agentProvider,   { webviewOptions: { retainContextWhenHidden: true } }),
         vscode.window.registerWebviewViewProvider(TaskViewProvider.viewId,          taskProvider,    { webviewOptions: { retainContextWhenHidden: true } }),
         vscode.window.registerWebviewViewProvider(InfrastructureViewProvider.viewId, infraProvider,  { webviewOptions: { retainContextWhenHidden: true } }),
         vscode.window.registerWebviewViewProvider(MemoryViewProvider.viewId,        memoryProvider,  { webviewOptions: { retainContextWhenHidden: true } }),
         vscode.window.registerWebviewViewProvider(FilesViewProvider.viewId,         filesProvider,   { webviewOptions: { retainContextWhenHidden: true } }),
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('nexus.selectNode', (nodeId: string) => {
+            ctxProvider.setSelectedNode(nodeId);
+            vscode.window.showInformationMessage(`Selected Node: ${nodeId}`);
+        }),
+        vscode.commands.registerCommand('nexus.editNodeSettings', async (item: ClusterTreeItem) => {
+            if (item.type !== 'setting' || !item.data) return;
+            const newValue = await vscode.window.showInputBox({
+                prompt: `Edit ${item.data.key}`,
+                value: String(item.data.value)
+            });
+            if (newValue !== undefined && newValue !== String(item.data.value)) {
+                vscode.window.showInformationMessage(`Requested update for ${item.data.key} to ${newValue}`);
+                // In a real implementation, make an HTTP POST to cluster server here.
+                clusterProvider.refresh();
+            }
+        })
     );
 
     // ── CodeLens ─────────────────────────────────────────────────────────────
@@ -85,6 +98,33 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    // ── Native Chat Participant ────────────────────────────────────────────────
+    const nexusChat = vscode.chat.createChatParticipant('nexus', async (request, context, response, token) => {
+        // Build the messages array from context.history and current request
+        const messages: ChatMessage[] = [];
+        for (const turn of context.history) {
+            if (turn instanceof vscode.ChatRequestTurn) {
+                messages.push({ role: 'user', content: turn.prompt });
+            } else if (turn instanceof vscode.ChatResponseTurn) {
+                const text = turn.response.map(r => r instanceof vscode.ChatResponseMarkdownPart ? r.value.value : '').join('');
+                if (text) messages.push({ role: 'assistant', content: text });
+            }
+        }
+        messages.push({ role: 'user', content: request.prompt });
+
+        // Connect to NEXUS cluster
+        try {
+            for await (const chunk of nexusClient.chat(messages)) {
+                if (token.isCancellationRequested) break;
+                response.markdown(chunk);
+            }
+        } catch (err: any) {
+            response.markdown(`**Error:** Could not communicate with NEXUS backend: ${err.message}`);
+        }
+    });
+    nexusChat.iconPath = vscode.Uri.joinPath(context.extensionUri, 'resources', 'nexus-icon.png');
+    context.subscriptions.push(nexusChat);
+
     // ── Command: nexus.ask ────────────────────────────────────────────────────
     context.subscriptions.push(
         vscode.commands.registerCommand('nexus.ask', async () => {
@@ -92,14 +132,16 @@ export function activate(context: vscode.ExtensionContext) {
                 prompt: 'Ask NEXUS anything',
                 placeHolder: 'e.g. "Explain the authentication flow"',
             });
-            if (text) { await chatProvider.sendMessage(text); }
+            if (text) {
+                vscode.commands.executeCommand('workbench.action.chat.open', { query: `@nexus ${text}` });
+            }
         })
     );
 
     // ── Command: nexus.sendToChat (used by inline actions) ────────────────────
     context.subscriptions.push(
         vscode.commands.registerCommand('nexus.sendToChat', async (text: string, consensus = false) => {
-            await chatProvider.sendMessage(text, true);
+            vscode.commands.executeCommand('workbench.action.chat.open', { query: `@nexus ${text}` });
         })
     );
 
@@ -107,7 +149,9 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('nexus.explainSelection', async () => {
             const sel = getSelection();
-            if (sel) { await chatProvider.sendMessage(`Explain the following code:\n\`\`\`\n${sel}\n\`\`\``); }
+            if (sel) {
+                vscode.commands.executeCommand('workbench.action.chat.open', { query: `@nexus Explain the following code:\n\`\`\`\n${sel}\n\`\`\`` });
+            }
         })
     );
 
@@ -115,7 +159,9 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('nexus.fixSelection', async () => {
             const sel = getSelection();
-            if (sel) { await chatProvider.sendMessage(`Fix any issues in the following code:\n\`\`\`\n${sel}\n\`\`\``); }
+            if (sel) {
+                vscode.commands.executeCommand('workbench.action.chat.open', { query: `@nexus Fix any issues in the following code:\n\`\`\`\n${sel}\n\`\`\`` });
+            }
         })
     );
 
@@ -123,7 +169,9 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('nexus.refactor', async () => {
             const sel = getSelection();
-            if (sel) { await chatProvider.sendMessage(`Refactor the following code for clarity and performance:\n\`\`\`\n${sel}\n\`\`\``); }
+            if (sel) {
+                vscode.commands.executeCommand('workbench.action.chat.open', { query: `@nexus Refactor the following code for clarity and performance:\n\`\`\`\n${sel}\n\`\`\`` });
+            }
         })
     );
 
@@ -131,7 +179,9 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('nexus.generateTests', async () => {
             const sel = getSelection();
-            if (sel) { await chatProvider.sendMessage(`Generate comprehensive unit tests for:\n\`\`\`\n${sel}\n\`\`\``); }
+            if (sel) {
+                vscode.commands.executeCommand('workbench.action.chat.open', { query: `@nexus Generate comprehensive unit tests for:\n\`\`\`\n${sel}\n\`\`\`` });
+            }
         })
     );
 
@@ -142,7 +192,7 @@ export function activate(context: vscode.ExtensionContext) {
             if (!editor) { return; }
             const text = editor.document.getText();
             const file = editor.document.fileName;
-            await chatProvider.sendMessage(`Review this file for bugs, issues, and improvements:\n\nFile: ${file}\n\`\`\`\n${text.slice(0, 5000)}\n\`\`\``);
+            vscode.commands.executeCommand('workbench.action.chat.open', { query: `@nexus Review this file for bugs, issues, and improvements:\n\nFile: ${file}\n\`\`\`\n${text.slice(0, 5000)}\n\`\`\`` });
         })
     );
 
@@ -150,10 +200,10 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('nexus.reviewWorkspace', async () => {
             const ctx = await contextEng.buildContext();
-            await chatProvider.sendMessage(
-                `Review the workspace "${ctx.workspace}" for overall code quality, architecture, and issues. ` +
-                `Active file: ${ctx.activeFile}. Modified files: ${ctx.modifiedFiles.join(', ')}.`
-            );
+            vscode.commands.executeCommand('workbench.action.chat.open', {
+                query: `@nexus Review the workspace "${ctx.workspace}" for overall code quality, architecture, and issues. ` +
+                       `Active file: ${ctx.activeFile}. Modified files: ${ctx.modifiedFiles.join(', ')}.`
+            });
         })
     );
 
@@ -212,12 +262,11 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('nexus.fixDiagnostic', async (uri: vscode.Uri, diag: vscode.Diagnostic) => {
             const doc = await vscode.workspace.openTextDocument(uri);
             const lineText = doc.lineAt(diag.range.start.line).text;
-            await chatProvider.sendMessage(
-                `Fix this diagnostic error in ${uri.fsPath}:\n\n` +
-                `Line ${diag.range.start.line + 1}: ${diag.message}\n\n` +
-                `Code: \`${lineText.trim()}\``,
-                true
-            );
+            vscode.commands.executeCommand('workbench.action.chat.open', {
+                query: `@nexus Fix this diagnostic error in ${uri.fsPath}:\n\n` +
+                       `Line ${diag.range.start.line + 1}: ${diag.message}\n\n` +
+                       `Code: \`${lineText.trim()}\``
+            });
         })
     );
 
