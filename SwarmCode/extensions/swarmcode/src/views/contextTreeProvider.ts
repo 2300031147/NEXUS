@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ContextEngine } from '../contextEngine';
+import { NexusClient } from '../nexusClient';
 
 export class ContextTreeItem extends vscode.TreeItem {
     constructor(
@@ -36,7 +37,7 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<ContextTreeI
 
     private _selectedNodeId?: string;
 
-    constructor(private contextEng: ContextEngine) {
+    constructor(private contextEng: ContextEngine, private nexusClient: NexusClient) {
         // We can listen to contextEng events if it has any, otherwise manual refresh
     }
 
@@ -56,37 +57,53 @@ export class ContextTreeProvider implements vscode.TreeDataProvider<ContextTreeI
     async getChildren(element?: ContextTreeItem): Promise<ContextTreeItem[]> {
         if (!element) {
             try {
-                // If a node is selected, we could theoretically fetch only its context.
-                // For now, we show the global IDE context or node-filtered context.
-                const ctx = await this.contextEng.buildContext();
-                
                 const items: ContextTreeItem[] = [];
                 
                 if (this._selectedNodeId) {
                     items.push(new ContextTreeItem(`Filtered for Node: ${this._selectedNodeId}`, vscode.TreeItemCollapsibleState.None, 'status'));
+                    
+                    try {
+                        const nodeCtx = await this.nexusClient.getNodeContext(this._selectedNodeId);
+                        if (nodeCtx && nodeCtx.files && nodeCtx.files.length > 0) {
+                            for (const f of nodeCtx.files) {
+                                items.push(new ContextTreeItem(
+                                    f.path.split('/').pop() || f.path,
+                                    vscode.TreeItemCollapsibleState.None,
+                                    'file',
+                                    f.path,
+                                    `${f.size || 0} bytes`
+                                ));
+                            }
+                        } else {
+                            items.push(new ContextTreeItem('No context ingested in this node.', vscode.TreeItemCollapsibleState.None, 'status'));
+                        }
+                    } catch (e: any) {
+                        items.push(new ContextTreeItem(`Error fetching node context: ${e.message}`, vscode.TreeItemCollapsibleState.None, 'status'));
+                    }
                 } else {
                     items.push(new ContextTreeItem(`Global Workspace Context`, vscode.TreeItemCollapsibleState.None, 'status'));
-                }
-
-                if (ctx.activeFile) {
-                    items.push(new ContextTreeItem(
-                        ctx.activeFile.split('/').pop() || ctx.activeFile,
-                        vscode.TreeItemCollapsibleState.None,
-                        'file',
-                        ctx.activeFile,
-                        'Active'
-                    ));
-                }
-
-                for (const f of ctx.modifiedFiles) {
-                    if (f !== ctx.activeFile) {
+                    
+                    const ctx = await this.contextEng.buildContext();
+                    if (ctx.activeFile) {
                         items.push(new ContextTreeItem(
-                            f.split('/').pop() || f,
+                            ctx.activeFile.split('/').pop() || ctx.activeFile,
                             vscode.TreeItemCollapsibleState.None,
                             'file',
-                            f,
-                            'Modified'
+                            ctx.activeFile,
+                            'Active'
                         ));
+                    }
+
+                    for (const f of ctx.modifiedFiles) {
+                        if (f !== ctx.activeFile) {
+                            items.push(new ContextTreeItem(
+                                f.split('/').pop() || f,
+                                vscode.TreeItemCollapsibleState.None,
+                                'file',
+                                f,
+                                'Modified'
+                            ));
+                        }
                     }
                 }
 

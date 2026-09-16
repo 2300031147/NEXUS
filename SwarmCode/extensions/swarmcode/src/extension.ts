@@ -34,7 +34,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ── 8 native view providers ──────────────────────────────────────────────
     const clusterProvider = new ClusterTreeProvider(nexusClient);
-    const ctxProvider     = new ContextTreeProvider(contextEng);
+    const ctxProvider     = new ContextTreeProvider(contextEng, nexusClient);
     const agentProvider   = new AgentViewProvider(context.extensionUri, taskManager);
     const taskProvider    = new TaskViewProvider(context.extensionUri, taskManager);
     const infraProvider   = new InfrastructureViewProvider(context.extensionUri, nexusClient);
@@ -63,9 +63,13 @@ export function activate(context: vscode.ExtensionContext) {
                 value: String(item.data.value)
             });
             if (newValue !== undefined && newValue !== String(item.data.value)) {
-                vscode.window.showInformationMessage(`Requested update for ${item.data.key} to ${newValue}`);
-                // In a real implementation, make an HTTP POST to cluster server here.
-                clusterProvider.refresh();
+                try {
+                    await nexusClient.updateNodeSettings({ [item.data.key]: newValue });
+                    vscode.window.showInformationMessage(`Updated ${item.data.key} to ${newValue}`);
+                    clusterProvider.refresh();
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(`Failed to update ${item.data.key}: ${e.message}`);
+                }
             }
         })
     );

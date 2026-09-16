@@ -181,6 +181,11 @@ export class NexusClient {
         return this.get<NodeInfo>('/v1/node/info');
     }
 
+    /** POST /v1/node/settings — update local node settings. */
+    public async updateNodeSettings(settings: Partial<NodeInfo>): Promise<{status: string, node: NodeInfo}> {
+        return this.post<{status: string, node: NodeInfo}>('/v1/node/settings', settings);
+    }
+
     /** GET /v1/cluster/peers — all discovered nodes. */
     public async getPeers(): Promise<{ cluster_id: string; total_nodes: number; nodes: NodeInfo[] }> {
         return this.get('/v1/cluster/peers');
@@ -223,9 +228,27 @@ export class NexusClient {
         return this.post('/v1/cluster/ingest', { summary, files });
     }
 
-    /** GET /v1/cluster/context — currently ingested context. */
+    /** GET /v1/cluster/context — currently ingested context on local node. */
     public async getCurrentContext(): Promise<IngestedContext> {
         return this.get<IngestedContext>('/v1/cluster/context');
+    }
+
+    /** GET /v1/cluster/context — currently ingested context on a specific node. */
+    public async getNodeContext(nodeId: string): Promise<IngestedContext> {
+        const topology = await this.getTopology();
+        const node = topology.nodes.find(n => n.node_id === nodeId);
+        if (!node) {
+            throw new Error(`Node ${nodeId} not found in topology.`);
+        }
+        
+        // Temporarily change base URL or make direct request
+        const originalUrl = this.baseUrl;
+        try {
+            this.setHostUrl(`http://${node.api_host}:${node.api_port}`);
+            return await this.get<IngestedContext>('/v1/cluster/context');
+        } finally {
+            this.setHostUrl(originalUrl);
+        }
     }
 
     // ── Consensus / Collaboration ─────────────────────────────────────────────

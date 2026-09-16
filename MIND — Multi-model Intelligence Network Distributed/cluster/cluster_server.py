@@ -19,13 +19,13 @@ import urllib.request
 from typing import Dict, Any, List, Optional
 
 try:
-    from discovery import SwarmDiscovery, SwarmNodeInfo, SWARM_DISCOVERY_PORT
-    from consensus_engine import MultiModelConsensusEngine
-    from node_config import detect_backend_model, WorkspaceScope
+    from discovery import SwarmDiscovery, SwarmNodeInfo, SWARM_DISCOVERY_PORT # type: ignore
+    from consensus_engine import MultiModelConsensusEngine # type: ignore
+    from node_config import detect_backend_model, WorkspaceScope # type: ignore
 except ImportError:  # imported as part of the `cluster` package
-    from cluster.discovery import SwarmDiscovery, SwarmNodeInfo, SWARM_DISCOVERY_PORT
-    from cluster.consensus_engine import MultiModelConsensusEngine
-    from cluster.node_config import detect_backend_model, WorkspaceScope
+    from cluster.discovery import SwarmDiscovery, SwarmNodeInfo, SWARM_DISCOVERY_PORT # type: ignore
+    from cluster.consensus_engine import MultiModelConsensusEngine # type: ignore
+    from cluster.node_config import detect_backend_model, WorkspaceScope # type: ignore
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("SwarmNode")
@@ -56,7 +56,7 @@ class SwarmNodeService:
         ram_gb: float = 16.0,
         ssd_swap_gb: float = 64.0,
         max_context: int = 65536,
-    ):
+    ) -> None:
         self.hostname = hostname or socket.gethostname()
         self.api_host = get_local_ip()
         self.api_port = api_port
@@ -113,10 +113,10 @@ class SwarmNodeService:
             "files": []
         }
 
-    def _on_peer_discovered(self, peer: SwarmNodeInfo):
+    def _on_peer_discovered(self, peer: SwarmNodeInfo) -> None:
         logger.info(f"✨ Discovered Peer Laptop Node: {peer.hostname} ({peer.api_host}:{peer.api_port}) running '{peer.model_name}'")
 
-    def _on_peer_lost(self, peer_id: str):
+    def _on_peer_lost(self, peer_id: str) -> None:
         logger.warning(f"⚠️ Lost connection to Peer Node: {peer_id}")
 
     def refresh_backend(self, timeout: float = 2.0, ttl: float = 60.0) -> None:
@@ -146,15 +146,17 @@ class SwarmNodeService:
         self.refresh_backend()
         local = self.node_info.to_dict()
         local["backend"] = self.backend
+        nodes = self.discovery.get_active_peers()
         return {
             "cluster_id": "swarm-default",
             "contract": "swarm-host/1",
             "local_node": local,
-            "nodes": self.discovery.get_active_peers(),
+            "total_nodes": len(nodes),
+            "nodes": nodes,
             "scope": self.workspace_scope.to_dict(),
         }
 
-    def start(self):
+    def start(self) -> None:
         # 1. Start automatic UDP discovery beacon and listener
         logger.info(f"Starting Swarm UDP Discovery on port {SWARM_DISCOVERY_PORT} (Node: {self.hostname})...")
         self.discovery.start()
@@ -171,21 +173,21 @@ class SwarmNodeService:
             self.discovery.stop()
             httpd.server_close()
 
-    def _create_handler(self):
+    def _create_handler(self) -> Any:
         service = self
 
         class SwarmHTTPHandler(BaseHTTPRequestHandler):
-            def _send_cors_headers(self):
+            def _send_cors_headers(self) -> None:
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                 self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
-            def do_OPTIONS(self):
+            def do_OPTIONS(self) -> None:
                 self.send_response(204)
                 self._send_cors_headers()
                 self.end_headers()
 
-            def _send_json(self, status: int, data: Any):
+            def _send_json(self, status: int, data: Any) -> None:
                 body = json.dumps(data).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -194,7 +196,7 @@ class SwarmNodeService:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def do_GET(self):
+            def do_GET(self) -> None:
                 if self.path == "/v1/node/info" or self.path == "/v1/node/status":
                     service.refresh_backend()
                     self._send_json(200, service.node_info.to_dict())
@@ -215,7 +217,7 @@ class SwarmNodeService:
                     # Proxy to llama-server
                     self._proxy_get(self.path)
 
-            def do_POST(self):
+            def do_POST(self) -> None:
                 try:
                     content_length = int(self.headers.get("Content-Length", 0))
                 except (ValueError, TypeError):
@@ -224,7 +226,7 @@ class SwarmNodeService:
                 try:
                     payload = json.loads(raw_body.decode("utf-8"))
                 except Exception:
-                    payload = {}
+                    payload: Dict[str, Any] = {}
 
                 if self.path == "/v1/cluster/ingest":
                     # Enforce the user-granted workspace scope first
@@ -253,6 +255,16 @@ class SwarmNodeService:
                     else:
                         service.workspace_scope.set_roots(payload.get("roots", []))
                     self._send_json(200, service.workspace_scope.to_dict())
+
+                elif self.path == "/v1/node/settings":
+                    # Update local node configuration settings (e.g., from native UI)
+                    if "role_description" in payload:
+                        service.role_description = payload["role_description"]
+                        service.node_info.role_description = payload["role_description"]
+                    if "model_name" in payload:
+                        service.model_name = payload["model_name"]
+                        service.node_info.model_name = payload["model_name"]
+                    self._send_json(200, {"status": "success", "node": service.node_info.to_dict()})
 
                 elif self.path == "/v1/cluster/collaborate" or self.path == "/v1/cluster/discuss":
                     # Run multi-model deliberation & zero-error cross-verification loop
@@ -284,7 +296,7 @@ class SwarmNodeService:
                 else:
                     self._proxy_post(self.path, raw_body)
 
-            def _proxy_get(self, path: str):
+            def _proxy_get(self, path: str) -> None:
                 target_url = f"{service.llama_backend_url}{path}"
                 try:
                     req = urllib.request.Request(target_url, headers={"Accept": "application/json"})
@@ -305,7 +317,7 @@ class SwarmNodeService:
                 except Exception as e:
                     self._send_json(502, {"error": f"Upstream llama.cpp server error: {e}"})
 
-            def _proxy_post(self, path: str, body: bytes):
+            def _proxy_post(self, path: str, body: bytes) -> None:
                 target_url = f"{service.llama_backend_url}{path}"
                 try:
                     req = urllib.request.Request(
@@ -333,7 +345,7 @@ class SwarmNodeService:
         return SwarmHTTPHandler
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Swarm Heterogeneous Multi-Model Cluster Node")
     parser.add_argument("--port", type=int, default=8090, help="Port for the Swarm Node Cluster API")
     parser.add_argument("--backend-url", type=str, default="http://127.0.0.1:8080", help="URL of the local llama-server instance")

@@ -32,7 +32,7 @@ class SwarmNodeInfo:
         ssd_swap_gb: float = 0.0,
         max_context: int = 32768,
         tags: Optional[List[str]] = None,
-    ):
+    ) -> None:
         self.node_id = node_id
         self.hostname = hostname
         self.api_host = api_host
@@ -74,7 +74,7 @@ class SwarmDiscovery:
         discovery_port: int = SWARM_DISCOVERY_PORT,
         on_peer_discovered: Optional[Callable[[SwarmNodeInfo], None]] = None,
         on_peer_lost: Optional[Callable[[str], None]] = None,
-    ):
+    ) -> None:
         self.node_info = node_info
         self.discovery_port = discovery_port
         self.on_peer_discovered = on_peer_discovered
@@ -87,7 +87,7 @@ class SwarmDiscovery:
         self._listen_sock: Optional[socket.socket] = None
         self._threads: List[threading.Thread] = []
 
-    def _setup_sockets(self):
+    def _setup_sockets(self) -> None:
         # Broadcast/Multicast Sender socket
         self._broadcast_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
         self._broadcast_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -111,7 +111,7 @@ class SwarmDiscovery:
         except Exception:
             pass
 
-    def start(self):
+    def start(self) -> None:
         if self.running:
             return
         self.running = True
@@ -125,7 +125,7 @@ class SwarmDiscovery:
         for t in self._threads:
             t.start()
 
-    def stop(self):
+    def stop(self) -> None:
         self.running = False
         if self._listen_sock:
             try:
@@ -138,7 +138,7 @@ class SwarmDiscovery:
             except Exception:
                 pass
 
-    def _beacon_loop(self):
+    def _beacon_loop(self) -> None:
         while self.running:
             try:
                 payload = {
@@ -170,7 +170,7 @@ class SwarmDiscovery:
                 pass
             time.sleep(HEARTBEAT_INTERVAL)
 
-    def _listen_loop(self):
+    def _listen_loop(self) -> None:
         while self.running:
             try:
                 if not self._listen_sock:
@@ -190,7 +190,7 @@ class SwarmDiscovery:
 
                 # If peer sent 127.0.0.1 or 0.0.0.0, use actual remote sender IP
                 peer_host = peer_data.get("api_host") or parsed.get("ip")
-                if not peer_host or peer_host in ("0.0.0.0", "127.0.0.1") and addr[0] not in ("127.0.0.1", "::1"):
+                if not peer_host or peer_host == "0.0.0.0" or (peer_host == "127.0.0.1" and addr[0] not in ("127.0.0.1", "::1")):
                     peer_host = addr[0]
 
                 # Reconstruct info
@@ -226,7 +226,7 @@ class SwarmDiscovery:
                 if not self.running:
                     break
 
-    def _reaper_loop(self):
+    def _reaper_loop(self) -> None:
         while self.running:
             time.sleep(2.0)
             now = time.time()

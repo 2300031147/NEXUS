@@ -18,7 +18,7 @@ logger = logging.getLogger("SwarmConsensus")
 
 
 class MultiModelConsensusEngine:
-    def __init__(self, local_node_info: Dict[str, Any], local_llama_url: str = "http://127.0.0.1:8080"):
+    def __init__(self, local_node_info: Dict[str, Any], local_llama_url: str = "http://127.0.0.1:8080") -> None:
         self.local_node = local_node_info
         self.local_llama_url = local_llama_url
         self.discussion_history: List[Dict[str, Any]] = []
@@ -50,8 +50,8 @@ class MultiModelConsensusEngine:
                 data = json.loads(resp.read().decode("utf-8"))
                 choices = data.get("choices", [])
                 if choices:
-                    return choices[0].get("message", {}).get("content", "")
-                return data.get("content", "")
+                    return str(choices[0].get("message", {}).get("content", ""))
+                return str(data.get("content", ""))
         except Exception as e:
             logger.warning(f"Direct API call to {endpoint_url} failed: {e}. Falling back to node synthesis.")
             return f"[{self.local_node.get('model_name', 'Node')} Insight]: Analyzed project context and verified zero-error architecture constraints."
@@ -81,7 +81,7 @@ class MultiModelConsensusEngine:
             })
 
         # Stage 1: Round-table initial analysis by each laptop's model
-        async def fetch_proposal(node):
+        async def fetch_proposal(node: Dict[str, Any]) -> Dict[str, Any]:
             node_name = node.get("hostname", "Node")
             model_name = node.get("model_name", "LocalModel")
             api_url = node.get("api_url", self.local_llama_url)
@@ -143,10 +143,10 @@ class MultiModelConsensusEngine:
                     "message": f"Round {verification_round}: Cross-model verification loop in progress across all nodes...",
                 })
 
-            round_reviews = []
+            round_reviews: List[Dict[str, Any]] = []
             errors_detected = False
 
-            async def fetch_review(reviewer_node):
+            async def fetch_review(reviewer_node: Dict[str, Any]) -> Dict[str, Any]:
                 r_name = reviewer_node.get("hostname", "Node")
                 r_model = reviewer_node.get("model_name", "Model")
                 r_url = reviewer_node.get("api_url", self.local_llama_url)
@@ -181,7 +181,7 @@ class MultiModelConsensusEngine:
                 # it carries explicit approval signals: a prose rejection
                 # ("I found 3 bugs ...") must count as rejection.
                 approved = True
-                issues = []
+                issues: List[str] = []
                 try:
                     if "{" in review_raw and "}" in review_raw:
                         json_str = review_raw[review_raw.find("{"):review_raw.rfind("}") + 1]

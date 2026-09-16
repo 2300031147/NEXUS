@@ -15,8 +15,7 @@
       {
         "id": "nexus",
         "name": "nexus",
-        "description": "NEXUS MIND Cluster Agent",
-        "isDefault": true
+        "description": "NEXUS MIND Cluster Agent"
       }
     ],
 
