@@ -7,6 +7,7 @@ llama_add_compile_flags()
 # llama
 
 file(GLOB LLAMA_MODELS_SOURCES "models/*.cpp")
+file(GLOB LLAMA_HARDWARE_SOURCES "hardware/*.cpp")
 
 add_library(llama
             ../include/llama.h
@@ -45,6 +46,7 @@ add_library(llama
             unicode.cpp
             unicode.h
             ${LLAMA_MODELS_SOURCES}
+            ${LLAMA_HARDWARE_SOURCES}
             )
 
 set_target_properties(llama PROPERTIES
@@ -58,7 +60,7 @@ target_compile_definitions(llama PRIVATE
     LLAMA_COMMIT="${LLAMA_BUILD_COMMIT}"
 )
 
-target_include_directories(llama PRIVATE .)
+target_include_directories(llama PRIVATE . hardware)
 target_include_directories(llama PUBLIC ../include)
 target_compile_features   (llama PRIVATE cxx_std_17) # don't bump
 
@@ -69,3 +71,9 @@ if (BUILD_SHARED_LIBS)
     target_compile_definitions(llama PRIVATE LLAMA_BUILD)
     target_compile_definitions(llama PUBLIC  LLAMA_SHARED)
 endif()
+
+# Fix for older GCC needing stdc++fs for std::filesystem in C++17
+if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9.0)
+    target_link_libraries(llama PRIVATE stdc++fs)
+endif()
+

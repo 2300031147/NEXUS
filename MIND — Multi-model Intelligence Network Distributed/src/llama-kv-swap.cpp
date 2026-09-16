@@ -216,12 +216,7 @@ std::vector<llama_drive_info> llama_kv_get_available_drives() {
         info.free_bytes = (uint64_t) mntbuf[i].f_bavail * mntbuf[i].f_bsize;
         info.is_ssd = true; // macOS defaults to SSD for modern hardware
 
-        std::string model = get_linux_device_model(mntbuf[i].f_mntfromname);
-        if (!model.empty()) {
-            info.device_name = model;
-        } else {
-            info.device_name = mntbuf[i].f_mntfromname;
-        }
+        info.device_name = mntbuf[i].f_mntfromname;
 
         bool duplicate = false;
         for (const auto & existing : drives) {
@@ -538,10 +533,10 @@ std::vector<llama_kv_block_id> llama_kv_block_index::find_matching_blocks(
     return result;
 }
 
-void llama_kv_block_index::remove_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+void llama_kv_block_index::remove_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, uint32_t block_size) {
     for (auto it = signatures.begin(); it != signatures.end();) {
         const bool match_seq = (it->first.seq_id == seq_id || seq_id == -1);
-        const llama_pos block_end = it->first.pos_start + (it->first.n_tokens > 0 ? (llama_pos) it->first.n_tokens : 32);
+        const llama_pos block_end = it->first.pos_start + (it->first.n_tokens > 0 ? (llama_pos) it->first.n_tokens : (llama_pos) block_size);
         // ONLY remove fully enclosed blocks, preserving partial overlap history
         const bool match_pos = (it->first.pos_start >= p0 && (p1 < 0 || block_end <= p1));
         if (match_seq && match_pos) {
@@ -552,7 +547,7 @@ void llama_kv_block_index::remove_seq(llama_seq_id seq_id, llama_pos p0, llama_p
     }
 }
 
-void llama_kv_block_index::shift_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta) {
+void llama_kv_block_index::shift_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta, uint32_t block_size) {
     std::vector<std::pair<llama_kv_block_id, llama_kv_block_signature>> to_shift;
     
     for (auto it = signatures.begin(); it != signatures.end();) {
@@ -561,10 +556,10 @@ void llama_kv_block_index::shift_seq(llama_seq_id seq_id, llama_pos p0, llama_po
             continue;
         }
         
-        const llama_pos block_end = it->first.pos_start + (it->first.n_tokens > 0 ? (llama_pos) it->first.n_tokens : 32);
+        const llama_pos block_end = it->first.pos_start + (it->first.n_tokens > 0 ? (llama_pos) it->first.n_tokens : (llama_pos) block_size);
         
         // Fully enclosed block -> shift ONLY if aligned
-        if (it->first.pos_start >= p0 && (p1 < 0 || block_end <= p1) && (delta % 32 == 0)) {
+        if (it->first.pos_start >= p0 && (p1 < 0 || block_end <= p1) && (delta % (int)block_size == 0)) {
             to_shift.push_back({it->first, it->second});
             it = signatures.erase(it);
         }
@@ -582,7 +577,7 @@ void llama_kv_block_index::shift_seq(llama_seq_id seq_id, llama_pos p0, llama_po
     }
 }
 
-void llama_kv_block_index::div_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) {
+void llama_kv_block_index::div_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d, uint32_t block_size) {
     if (d == 1) return;
     for (auto it = signatures.begin(); it != signatures.end();) {
         if (it->first.seq_id != seq_id) {
@@ -590,7 +585,7 @@ void llama_kv_block_index::div_seq(llama_seq_id seq_id, llama_pos p0, llama_pos 
             continue;
         }
         
-        const llama_pos block_end = it->first.pos_start + (it->first.n_tokens > 0 ? (llama_pos) it->first.n_tokens : 32);
+        const llama_pos block_end = it->first.pos_start + (it->first.n_tokens > 0 ? (llama_pos) it->first.n_tokens : (llama_pos) block_size);
         
         // Division compacts positions, which invalidates fixed-size blocks. Delete all overlaps.
         if ((p1 < 0 && block_end > p0) || (it->first.pos_start < p1 && block_end > p0)) {
@@ -601,7 +596,7 @@ void llama_kv_block_index::div_seq(llama_seq_id seq_id, llama_pos p0, llama_pos 
     }
 }
 
-void llama_kv_block_index::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) {
+void llama_kv_block_index::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1, uint32_t block_size) {
     std::vector<std::pair<llama_kv_block_id, llama_kv_block_signature>> to_copy;
     
     for (const auto & kv : signatures) {
@@ -609,7 +604,7 @@ void llama_kv_block_index::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_id_d
             continue;
         }
         
-        const llama_pos block_end = kv.first.pos_start + (kv.first.n_tokens > 0 ? (llama_pos) kv.first.n_tokens : 32);
+        const llama_pos block_end = kv.first.pos_start + (kv.first.n_tokens > 0 ? (llama_pos) kv.first.n_tokens : (llama_pos) block_size);
         
         // Copy ANY overlapping block, to ensure destination sequence has full context
         if ((p1 < 0 || kv.first.pos_start < p1) && block_end > p0) {
@@ -653,7 +648,17 @@ llama_kv_tiered_manager::llama_kv_tiered_manager(
         tq_mode_v(tq_mode_v),
         use_turboquant(use_turboquant) {
 
+    topology = HardwareDetector::detect();
+    HardwareDetector::log_topology(topology);
+    profile_type = HardwareProfile::determine_profile(topology);
+
     block_bytes = calculate_block_bytes();
+
+    tiers = HardwareProfile::build_cache_tiers(
+        topology,
+        (size_t)kv_size * block_bytes / (block_size > 0 ? block_size : 32),
+        max_ram_bytes,
+        max_swap_size);
 
     store = std::make_unique<llama_kv_swap_store>(swap_path, max_swap_size, block_bytes, engine);
     allocate_staging_buffer();
@@ -679,31 +684,6 @@ llama_kv_tiered_manager::~llama_kv_tiered_manager() {
             meta_path += ".meta";
         }
         
-        // Flush all WARM_RAM blocks to COLD_SSD so they are saved to disk
-        for (auto it = warm_ram_list.begin(); it != warm_ram_list.end(); ++it) {
-            auto & warm_meta = blocks[*it];
-            int64_t warm_slot = store->alloc_slot();
-            if (warm_slot >= 0) {
-                bool write_ok = false;
-                if (engine == llama_kv_swap_engine::PINNED_DMA || engine == llama_kv_swap_engine::POSIX_ALIGNED) {
-                    write_ok = store->write_block_direct((uint64_t) warm_slot, warm_meta.ram_ptr, block_bytes);
-                } else {
-                    write_ok = store->write_block((uint64_t) warm_slot, warm_meta.ram_ptr, block_bytes);
-                }
-                if (write_ok) {
-                    llama_kv_swap_aligned_free(warm_meta.ram_ptr);
-                    warm_meta.ram_ptr = nullptr;
-                    used_ram_bytes -= block_bytes;
-                    warm_meta.loc = llama_kv_block_loc::COLD_SSD;
-                    warm_meta.swap_slot = (uint64_t) warm_slot;
-                    warm_meta.dirty = false;
-                } else {
-                    store->free_slot((uint64_t) warm_slot);
-                }
-            }
-        }
-        warm_ram_list.clear();
-        warm_ram_map.clear();
 
         if (save_state(meta_path)) {
             fprintf(stderr, "%s: saved SSD secondary cache state to %s (%zu blocks)\n", __func__, meta_path.c_str(), blocks.size());
@@ -1047,6 +1027,13 @@ bool llama_kv_tiered_manager::evict_lru_block(
                 continue;
             }
 
+            // Anti-thrashing protection: skip recently recalled pinned blocks
+            if (meta_it->second.pinned) {
+                meta_it->second.pinned = false; // unpin for subsequent eviction cycles
+                ++it;
+                continue;
+            }
+
             bool is_prompt = (bid.pos_start < 256);
             bool is_keep = (bid.seq_id == keep_seq && keep_seq != -1);
 
@@ -1218,7 +1205,8 @@ bool llama_kv_tiered_manager::evict_lru_block(
         }
         std::memcpy(meta.ram_ptr, io_buffer, block_bytes);
         used_ram_bytes += block_bytes;
-        meta.loc = llama_kv_block_loc::WARM_RAM;
+        meta.set_tier(CacheTierType::WARM);
+        meta.size = block_bytes;
         
         warm_ram_list.push_front(meta.id);
         warm_ram_map[meta.id] = warm_ram_list.begin();
@@ -1249,7 +1237,7 @@ bool llama_kv_tiered_manager::evict_lru_block(
             warm_meta.ram_ptr = nullptr;
             used_ram_bytes -= block_bytes;
             
-            warm_meta.loc = llama_kv_block_loc::COLD_SSD;
+            warm_meta.set_tier(CacheTierType::COLD);
             warm_meta.swap_slot = (uint64_t) warm_slot;
             
             warm_ram_map.erase(warm_it);
@@ -1262,7 +1250,8 @@ bool llama_kv_tiered_manager::evict_lru_block(
             }
             std::memcpy(meta.ram_ptr, io_buffer, block_bytes);
             used_ram_bytes += block_bytes;
-            meta.loc = llama_kv_block_loc::WARM_RAM;
+            meta.set_tier(CacheTierType::WARM);
+            meta.size = block_bytes;
             
             warm_ram_list.push_front(meta.id);
             warm_ram_map[meta.id] = warm_ram_list.begin();
@@ -1278,7 +1267,8 @@ bool llama_kv_tiered_manager::evict_lru_block(
                 return false;
             }
             meta.swap_slot = (uint64_t) slot;
-            meta.loc = llama_kv_block_loc::COLD_SSD;
+            meta.set_tier(CacheTierType::COLD);
+            meta.size = block_bytes;
         }
     }
     
@@ -1564,7 +1554,9 @@ bool llama_kv_tiered_manager::swap_in_block(
         }
     }
 
-    meta.loc = llama_kv_block_loc::HOT_VRAM;
+    meta.set_tier(CacheTierType::HOT);
+    meta.access_count++;
+    meta.pinned = true; // Protect from immediate re-eviction in thrashing cycles
     meta.swap_slot = 0;
     meta.cell_start = eff_cell;
     meta.stream_id = stream_id;
@@ -1578,6 +1570,72 @@ bool llama_kv_tiered_manager::swap_in_block(
     lru_map[it->first] = lru_list.begin();
 
     return true;
+}
+
+MemoryPressureAction llama_kv_tiered_manager::check_memory_pressure_and_evict(
+        std::vector<ggml_tensor *> & k_tensors,
+        std::vector<ggml_tensor *> & v_tensors,
+        uint32_t stream_id,
+        llama_seq_id keep_seq,
+        const llama_kv_cells * cells) {
+
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+
+    MemoryPressureStats stats = pressure_tracker.sample();
+    MemoryPressureAction action = pressure_tracker.evaluate(stats);
+
+    if (action == MemoryPressureAction::KEEP_HOT) {
+        return action;
+    }
+
+    if (action == MemoryPressureAction::DEMOTE_TO_WARM) {
+        llama_kv_block_meta evicted_meta;
+        evict_lru_block(k_tensors, v_tensors, stream_id, evicted_meta, keep_seq, cells);
+        return action;
+    }
+
+    if (action == MemoryPressureAction::AGGRESSIVE_EVICT || action == MemoryPressureAction::CRITICAL_SPILL) {
+        if (store && !warm_ram_list.empty()) {
+            size_t blocks_to_spill = (action == MemoryPressureAction::CRITICAL_SPILL) ? 4 : 1;
+            while (blocks_to_spill > 0 && !warm_ram_list.empty()) {
+                auto warm_it = warm_ram_list.back();
+                auto & warm_meta = blocks[warm_it];
+
+                int64_t warm_slot = store->alloc_slot();
+                if (warm_slot < 0) break;
+
+                bool write_ok = false;
+                if (warm_meta.ram_ptr) {
+                    if (engine == llama_kv_swap_engine::PINNED_DMA || engine == llama_kv_swap_engine::POSIX_ALIGNED) {
+                        write_ok = store->write_block_direct((uint64_t) warm_slot, warm_meta.ram_ptr, block_bytes);
+                    } else {
+                        write_ok = store->write_block((uint64_t) warm_slot, warm_meta.ram_ptr, block_bytes);
+                    }
+                    if (write_ok) {
+                        llama_kv_swap_aligned_free(warm_meta.ram_ptr);
+                        warm_meta.ram_ptr = nullptr;
+                        used_ram_bytes -= block_bytes;
+                    }
+                } else {
+                    write_ok = true;
+                }
+
+                if (write_ok) {
+                    warm_meta.set_tier(CacheTierType::COLD);
+                    warm_meta.swap_slot = (uint64_t) warm_slot;
+                    warm_ram_map.erase(warm_it);
+                    warm_ram_list.pop_back();
+                    n_evictions++;
+                } else {
+                    store->free_slot((uint64_t) warm_slot);
+                    break;
+                }
+                blocks_to_spill--;
+            }
+        }
+    }
+
+    return action;
 }
 
 void llama_kv_tiered_manager::remove_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
@@ -1597,7 +1655,7 @@ void llama_kv_tiered_manager::remove_seq(llama_seq_id seq_id, llama_pos p0, llam
         }
     }
 
-    index.remove_seq(seq_id, p0, p1);
+    index.remove_seq(seq_id, p0, p1, block_size);
 
     for (auto it = blocks.begin(); it != blocks.end();) {
         const bool match_seq = (it->first.seq_id == seq_id || seq_id == -1);
@@ -1639,7 +1697,7 @@ void llama_kv_tiered_manager::remove_seq(llama_seq_id seq_id, llama_pos p0, llam
 void llama_kv_tiered_manager::shift_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta) {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     seq_active_block.erase(seq_id);
-    index.shift_seq(seq_id, p0, p1, delta);
+    index.shift_seq(seq_id, p0, p1, delta, block_size);
 
     std::vector<llama_kv_block_meta> to_shift;
     
@@ -1731,7 +1789,7 @@ void llama_kv_tiered_manager::div_seq(llama_seq_id seq_id, llama_pos p0, llama_p
     if (d == 1) return;
     std::lock_guard<std::recursive_mutex> lock(mutex);
     seq_active_block.erase(seq_id);
-    index.div_seq(seq_id, p0, p1, d);
+    index.div_seq(seq_id, p0, p1, d, block_size);
 
     for (auto it = blocks.begin(); it != blocks.end();) {
         if (it->first.seq_id != seq_id) {
@@ -1776,14 +1834,17 @@ void llama_kv_tiered_manager::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_i
     // preserve active block tracking from src
     auto active_it = seq_active_block.find(seq_id_src);
     if (active_it != seq_active_block.end()) {
-        seq_active_block[seq_id_dst] = active_it->second;
+        llama_kv_block_id dst_active_id = active_it->second;
+        dst_active_id.seq_id = seq_id_dst;
+        seq_active_block[seq_id_dst] = dst_active_id;
     }
+
 
     if (p1 < 0) {
         p1 = std::numeric_limits<llama_pos>::max();
     }
     
-    index.cp_seq(seq_id_src, seq_id_dst, p0, p1);
+    index.cp_seq(seq_id_src, seq_id_dst, p0, p1, block_size);
     
     std::vector<llama_kv_block_meta> to_add;
     
@@ -1883,17 +1944,18 @@ void llama_kv_tiered_manager::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_i
 }
 
 
-bool llama_kv_tiered_manager::save_state(const std::string & meta_path) const {
+bool llama_kv_tiered_manager::save_state(const std::string & meta_path) {
     if (!store) return false;
     std::lock_guard<std::recursive_mutex> lock(mutex);
 
     store->flush();
 
     // Flush any blocks currently in WARM_RAM to COLD_SSD so they are fully persisted
-    auto * non_const_this = const_cast<llama_kv_tiered_manager *>(this);
-    for (auto it = non_const_this->warm_ram_list.begin(); it != non_const_this->warm_ram_list.end(); ++it) {
-        auto & warm_meta = non_const_this->blocks[*it];
+    auto it = warm_ram_list.begin();
+    while (it != warm_ram_list.end()) {
+        auto & warm_meta = blocks[*it];
         int64_t warm_slot = store->alloc_slot();
+        bool success = false;
         if (warm_slot >= 0) {
             bool write_ok = false;
             if (engine == llama_kv_swap_engine::PINNED_DMA || engine == llama_kv_swap_engine::POSIX_ALIGNED) {
@@ -1904,17 +1966,22 @@ bool llama_kv_tiered_manager::save_state(const std::string & meta_path) const {
             if (write_ok) {
                 llama_kv_swap_aligned_free(warm_meta.ram_ptr);
                 warm_meta.ram_ptr = nullptr;
-                non_const_this->used_ram_bytes -= block_bytes;
+                used_ram_bytes -= block_bytes;
                 warm_meta.loc = llama_kv_block_loc::COLD_SSD;
                 warm_meta.swap_slot = (uint64_t) warm_slot;
                 warm_meta.dirty = false;
+                success = true;
             } else {
                 store->free_slot((uint64_t) warm_slot);
             }
         }
+        if (success) {
+            warm_ram_map.erase(*it);
+            it = warm_ram_list.erase(it);
+        } else {
+            ++it;
+        }
     }
-    non_const_this->warm_ram_list.clear();
-    non_const_this->warm_ram_map.clear();
 
     store->flush();
 

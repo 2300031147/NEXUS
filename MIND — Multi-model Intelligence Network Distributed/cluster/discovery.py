@@ -40,6 +40,11 @@ class SwarmNodeInfo:
         ssd_swap_gb: float = 0.0,
         max_context: int = 32768,
         tags: Optional[List[str]] = None,
+        unified_memory: bool = False,
+        architecture: str = "unknown",
+        accelerator: str = "cpu",
+        profile_name: str = "cpu_only",
+        cache_tiers: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         self.node_id = node_id
         self.hostname = hostname
@@ -51,6 +56,11 @@ class SwarmNodeInfo:
         self.ram_gb = ram_gb
         self.ssd_swap_gb = ssd_swap_gb
         self.max_context = max_context
+        self.unified_memory = unified_memory
+        self.architecture = architecture
+        self.accelerator = accelerator
+        self.profile_name = profile_name
+        self.cache_tiers = cache_tiers
         self.tags = tags or ["llama.cpp", "ssd_tiered_kv", "swarm_agent"]
         self.last_seen = time.time()
 
@@ -68,6 +78,18 @@ class SwarmNodeInfo:
                 "ram_gb": self.ram_gb,
                 "ssd_swap_gb": self.ssd_swap_gb,
                 "max_context": self.max_context,
+                "unified_memory": self.unified_memory,
+            },
+            "topology": {
+                "unified_memory": self.unified_memory,
+                "architecture": self.architecture,
+                "accelerator": self.accelerator,
+                "profile_name": self.profile_name,
+                "cache_tiers": self.cache_tiers or [
+                    {"tier": "HOT", "backend": "uma_hot" if self.unified_memory else (self.accelerator + "_vram"), "unified": self.unified_memory},
+                    {"tier": "WARM", "backend": "uma_warm" if self.unified_memory else "system_ram", "unified": self.unified_memory},
+                    {"tier": "COLD", "backend": "nvme", "persistent": True, "unified": False}
+                ],
             },
             "vram_gb": self.vram_gb,
             "ram_gb": self.ram_gb,
@@ -232,6 +254,7 @@ class SwarmDiscovery:
             model_name = parsed.get("model") or peer_data.get("model_name", "Unknown-Model")
             role_desc = parsed.get("role") or peer_data.get("role_description", "Team Model")
 
+            topo = peer_data.get("topology", {})
             peer = SwarmNodeInfo(
                 node_id=peer_id,
                 hostname=peer_data.get("hostname", "Unknown-Laptop"),
@@ -244,6 +267,11 @@ class SwarmDiscovery:
                 ssd_swap_gb=peer_data.get("memory", {}).get("ssd_swap_gb", 0.0),
                 max_context=peer_data.get("memory", {}).get("max_context", 32768),
                 tags=peer_data.get("tags", []),
+                unified_memory=topo.get("unified_memory", False),
+                architecture=topo.get("architecture", "unknown"),
+                accelerator=topo.get("accelerator", "cpu"),
+                profile_name=topo.get("profile_name", "cpu_only"),
+                cache_tiers=topo.get("cache_tiers"),
             )
             peer.last_seen = time.time()
 

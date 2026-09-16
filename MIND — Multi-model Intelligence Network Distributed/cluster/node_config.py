@@ -14,6 +14,7 @@ import json
 import os
 import socket
 import time
+import platform
 import urllib.request
 import urllib.error
 from typing import Dict, Any, List, Optional, Tuple
@@ -91,6 +92,105 @@ def _http_get_json(url: str, timeout: float = 5.0) -> Optional[Any]:
             return json.loads(resp.read().decode("utf-8"))
     except Exception:
         return None
+
+
+def detect_node_topology() -> Dict[str, Any]:
+    """Detect local hardware, architecture, unified memory (UMA), and cache tiers."""
+    arch = platform.machine().lower()
+    system = platform.system().lower()
+
+    unified_memory = False
+    accelerator = "cpu"
+    profile_name = "cpu_only"
+    vram_gb = 0.0
+    ram_gb = 0.0
+    ssd_swap_gb = 0.0
+
+    # 1. Detect System RAM
+    if system == "linux":
+        try:
+            with open("/proc/meminfo", "r") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        ram_gb = round(int(line.split()[1]) / (1024 * 1024), 2)
+                        break
+        except Exception:
+            pass
+    elif system == "darwin":
+        try:
+            import subprocess
+            out = subprocess.check_output(["sysctl", "-n", "hw.memsize"]).decode().strip()
+            ram_gb = round(int(out) / (1024 ** 3), 2)
+        except Exception:
+            pass
+
+    # 2. Detect UMA vs Discrete
+    if system == "darwin" and ("arm" in arch or "aarch64" in arch):
+        unified_memory = True
+        accelerator = "metal"
+        profile_name = "unified_memory"
+    elif "aarch64" in arch or "arm" in arch:
+        is_snapdragon = False
+        try:
+            if os.path.exists("/sys/devices/soc0/machine"):
+                with open("/sys/devices/soc0/machine", "r") as f:
+                    soc = f.read().lower()
+                    if "snapdragon" in soc or "qualcomm" in soc or "sm8" in soc or "x elite" in soc:
+                        is_snapdragon = True
+        except Exception:
+            pass
+        if is_snapdragon:
+            unified_memory = True
+            accelerator = "qualcomm"
+            profile_name = "accelerator"
+        else:
+            unified_memory = True
+            accelerator = "cpu"
+            profile_name = "unified_memory"
+    else:
+        has_nvidia = os.path.exists("/proc/driver/nvidia")
+        if has_nvidia:
+            unified_memory = False
+            accelerator = "cuda"
+            profile_name = "discrete_gpu"
+            try:
+                import subprocess
+                out = subprocess.check_output(
+                    ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
+                    stderr=subprocess.DEVNULL
+                ).decode().strip().split("\n")[0]
+                vram_gb = round(int(out) / 1024, 2)
+            except Exception:
+                vram_gb = 8.0
+        else:
+            profile_name = "cpu_only"
+
+    if profile_name == "cpu_only":
+        hot_unified = True
+        warm_unified = True
+        warm_backend = "system_ram_warm"
+    else:
+        hot_unified = unified_memory
+        warm_unified = unified_memory
+        warm_backend = "uma_warm" if unified_memory else "system_ram"
+
+    cache_tiers = [
+        {"tier": "HOT", "backend": "uma_hot" if unified_memory else (accelerator + "_vram" if accelerator != "cpu" else "system_ram"), "unified": hot_unified},
+        {"tier": "WARM", "backend": warm_backend, "unified": warm_unified},
+        {"tier": "COLD", "backend": "nvme", "persistent": True, "unified": False}
+    ]
+
+    return {
+        "architecture": arch,
+        "system": system,
+        "unified_memory": unified_memory,
+        "accelerator": accelerator,
+        "profile_name": profile_name,
+        "ram_gb": ram_gb,
+        "vram_gb": vram_gb,
+        "ssd_swap_gb": ssd_swap_gb,
+        "cache_tiers": cache_tiers,
+    }
 
 
 def detect_backend_model(

@@ -21,11 +21,11 @@ from typing import Dict, Any, List, Optional
 try:
     from discovery import SwarmDiscovery, SwarmNodeInfo, SWARM_DISCOVERY_PORT # type: ignore
     from consensus_engine import MultiModelConsensusEngine # type: ignore
-    from node_config import detect_backend_model, WorkspaceScope # type: ignore
+    from node_config import detect_backend_model, detect_node_topology, WorkspaceScope # type: ignore
 except ImportError:  # imported as part of the `cluster` package
     from cluster.discovery import SwarmDiscovery, SwarmNodeInfo, SWARM_DISCOVERY_PORT # type: ignore
     from cluster.consensus_engine import MultiModelConsensusEngine # type: ignore
-    from cluster.node_config import detect_backend_model, WorkspaceScope # type: ignore
+    from cluster.node_config import detect_backend_model, detect_node_topology, WorkspaceScope # type: ignore
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] [%(name)s] %(levelname)s: %(message)s")
 logger = logging.getLogger("SwarmNode")
@@ -93,6 +93,11 @@ class SwarmNodeService:
         self.role_description = role_description
 
         self.node_id = f"node-{self.hostname.lower()}-{self.api_port}"
+        
+        topo = detect_node_topology()
+        eff_ram = ram_gb if ram_gb > 0.0 else topo.get("ram_gb", 0.0)
+        eff_vram = vram_gb if vram_gb > 0.0 else topo.get("vram_gb", 0.0)
+
         self.node_info = SwarmNodeInfo(
             node_id=self.node_id,
             hostname=self.hostname,
@@ -100,11 +105,16 @@ class SwarmNodeService:
             api_port=self.api_port,
             model_name=self.model_name,
             role_description=self.role_description,
-            vram_gb=vram_gb,
-            ram_gb=ram_gb,
+            vram_gb=eff_vram,
+            ram_gb=eff_ram,
             ssd_swap_gb=ssd_swap_gb,
             max_context=max_context,
             tags=["swarmcode", "ssd_tiered_kv", "multi_agent_consensus"],
+            unified_memory=topo.get("unified_memory", False),
+            architecture=topo.get("architecture", "unknown"),
+            accelerator=topo.get("accelerator", "cpu"),
+            profile_name=topo.get("profile_name", "cpu_only"),
+            cache_tiers=topo.get("cache_tiers"),
         )
 
         # Heterogeneous cluster: every node serves its OWN model. Identify
@@ -413,8 +423,8 @@ def main() -> None:
     parser.add_argument("--backend-url", type=str, default="http://127.0.0.1:8080", help="URL of the local llama-server instance")
     parser.add_argument("--model-name", type=str, default="Qwen-2.5-Coder-Tiered", help="Model name running on this node")
     parser.add_argument("--role", type=str, default="Cluster AI Peer", help="Role / specialty of this node's model")
-    parser.add_argument("--vram-gb", type=float, default=6.0, help="VRAM capacity in GB")
-    parser.add_argument("--ram-gb", type=float, default=16.0, help="RAM capacity in GB")
+    parser.add_argument("--vram-gb", type=float, default=0.0, help="VRAM capacity in GB (0.0 to auto-detect)")
+    parser.add_argument("--ram-gb", type=float, default=0.0, help="RAM capacity in GB (0.0 to auto-detect)")
     parser.add_argument("--ssd-swap-gb", type=float, default=64.0, help="NVMe SSD swap capacity in GB")
     parser.add_argument("--max-context", type=int, default=65536, help="Maximum context size with SSD swap")
 

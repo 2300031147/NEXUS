@@ -353,3 +353,7 @@ if (TARGET gguf-model-data)
     target_link_libraries(test-export-graph-ops PRIVATE gguf-model-data)
     target_compile_definitions(test-export-graph-ops PRIVATE LLAMA_HF_FETCH)
 endif()
+
+llama_build_and_test(test-hardware-topology.cpp)
+target_link_libraries(test-hardware-topology PRIVATE llama)
+target_include_directories(test-hardware-topology PRIVATE ../src ../src/hardware)

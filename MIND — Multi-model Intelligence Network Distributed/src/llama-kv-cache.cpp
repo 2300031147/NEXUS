@@ -1260,6 +1260,18 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
     }
 
     if (swap_mgr && !dry_run) {
+        // Proactively check system memory pressure and evict/demote if under pressure
+        for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
+            std::vector<ggml_tensor *> k_tensors;
+            std::vector<ggml_tensor *> v_tensors;
+            for (const auto & l : layers) {
+                k_tensors.push_back(l.k_stream[sinfo.strm[s]]);
+                v_tensors.push_back(l.v_stream[sinfo.strm[s]]);
+            }
+            auto & cells = v_cells[sinfo.strm[s]];
+            swap_mgr->check_memory_pressure_and_evict(k_tensors, v_tensors, sinfo.strm[s], -1, &cells);
+        }
+
         for (uint32_t s = 0; s < sinfo.n_stream(); ++s) {
             if (sinfo.idxs[s].empty() || s >= ubatch.n_seqs_unq) {
                 continue;

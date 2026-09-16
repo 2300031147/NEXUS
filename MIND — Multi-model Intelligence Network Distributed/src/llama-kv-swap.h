@@ -12,6 +12,10 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include "hardware/memory_topology.h"
+#include "hardware/hardware_profile.h"
+#include "hardware/pressure_tracker.h"
+#include "hardware/detector.h"
 #include <unordered_map>
 #include <unordered_set>
 #include <list>
@@ -122,7 +126,16 @@ struct llama_kv_block_meta {
     uint32_t            stream_id = 0;  // stream/device association
     void *              ram_ptr = nullptr;
     bool                dirty = false;
+    size_t              size = 0;
+    uint32_t            access_count = 0;
+    bool                pinned = false;
     llama_kv_block_signature signature;
+
+    void set_tier(CacheTierType t) {
+        if (t == CacheTierType::HOT) loc = llama_kv_block_loc::HOT_VRAM;
+        else if (t == CacheTierType::WARM) loc = llama_kv_block_loc::WARM_RAM;
+        else if (t == CacheTierType::COLD) loc = llama_kv_block_loc::COLD_SSD;
+    }
 };
 
 // Storage backend for swapping blocks to disk
@@ -191,10 +204,10 @@ public:
     const std::unordered_map<llama_kv_block_id, llama_kv_block_signature, llama_kv_block_id_hash>& get_signatures() const { return signatures; }
     void set_signatures(std::unordered_map<llama_kv_block_id, llama_kv_block_signature, llama_kv_block_id_hash> sigs) { signatures = std::move(sigs); }
 
-    void remove_seq(llama_seq_id seq_id, llama_pos p0 = 0, llama_pos p1 = -1);
-    void shift_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta);
-    void div_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d);
-    void cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1);
+    void remove_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, uint32_t block_size);
+    void shift_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta, uint32_t block_size);
+    void div_seq(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d, uint32_t block_size);
+    void cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1, uint32_t block_size);
 
 private:
     std::unordered_map<llama_kv_block_id, llama_kv_block_signature, llama_kv_block_id_hash> signatures;
@@ -251,6 +264,13 @@ public:
             llama_seq_id keep_seq = -1,
             const llama_kv_cells * cells = nullptr);
 
+    MemoryPressureAction check_memory_pressure_and_evict(
+            std::vector<ggml_tensor *> & k_tensors,
+            std::vector<ggml_tensor *> & v_tensors,
+            uint32_t stream_id,
+            llama_seq_id keep_seq,
+            const llama_kv_cells * cells);
+
     // Check if query needs cold SSD blocks.
     // If not needed, 0 disk operations occur (saves SSD IOPS and wear).
     std::vector<llama_kv_block_id> get_recallable_blocks(
@@ -264,7 +284,7 @@ public:
     void reserve(size_t max_swap_size, size_t block_bytes);
     
     // Save/Load persistence state
-    bool save_state(const std::string & meta_path) const;
+    bool save_state(const std::string & meta_path);
     bool load_state(const std::string & meta_path);
 
     // Swap block back into memory
@@ -300,6 +320,10 @@ private:
     size_t   block_bytes = 0;
     uint64_t current_ts = 0;
     llama_kv_swap_engine engine;
+    MemoryTopology topology;
+    HardwareProfileType profile_type;
+    std::vector<CacheTier> tiers;
+    MemoryPressureTracker pressure_tracker;
 
     const llama_hparams hparams;
     uint32_t n_layers;
