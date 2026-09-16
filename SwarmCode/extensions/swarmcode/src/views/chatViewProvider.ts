@@ -107,17 +107,36 @@ export class ChatViewProvider implements vscode.WebviewViewProvider {
 
     private async handleApplyCode(code: string, filePath?: string) {
         const editor = vscode.window.activeTextEditor;
-        if (!editor && !filePath) {
+
+        if (filePath && !editor) {
+            // Explicit file path, no active editor — open and replace entire file
+            const targetUri = vscode.Uri.file(filePath);
+            const doc = await vscode.workspace.openTextDocument(targetUri);
+            const edit = new vscode.WorkspaceEdit();
+            const lastLine = doc.lineCount > 0 ? doc.lineCount - 1 : 0;
+            const lastChar = doc.lineCount > 0 ? doc.lineAt(lastLine).text.length : 0;
+            edit.replace(doc.uri, new vscode.Range(0, 0, lastLine, lastChar), code);
+            await vscode.workspace.applyEdit(edit);
+            return;
+        }
+
+        if (!editor) {
             vscode.window.showWarningMessage('NEXUS: No active editor to apply code to.');
             return;
         }
-        const targetUri = filePath ? vscode.Uri.file(filePath) : editor!.document.uri;
+
         const edit = new vscode.WorkspaceEdit();
-        const doc = filePath
-            ? await vscode.workspace.openTextDocument(targetUri)
-            : editor!.document;
-        edit.replace(doc.uri, new vscode.Range(0, 0, doc.lineCount, 0), code);
+        const sel = editor.selection;
+        if (!sel.isEmpty) {
+            // Replace the selected text
+            edit.replace(editor.document.uri, sel, code);
+        } else {
+            // No selection — insert at cursor position
+            edit.insert(editor.document.uri, sel.active, code);
+        }
         await vscode.workspace.applyEdit(edit);
+        // Reveal the insertion point
+        editor.revealRange(sel, vscode.TextEditorRevealType.InCenter);
     }
 
     private post(command: string, payload: Record<string, unknown>) {

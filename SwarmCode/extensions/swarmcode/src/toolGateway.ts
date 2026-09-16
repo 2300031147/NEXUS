@@ -98,7 +98,10 @@ export class ToolGateway {
         const uri = vscode.Uri.file(proposal.path);
         try {
             const doc = await vscode.workspace.openTextDocument(uri);
-            edit.replace(uri, new vscode.Range(0, 0, doc.lineCount, 0), proposal.proposedContent);
+            // Use the last line/char to avoid going past EOF
+            const lastLine = doc.lineCount > 0 ? doc.lineCount - 1 : 0;
+            const lastChar = doc.lineCount > 0 ? doc.lineAt(lastLine).text.length : 0;
+            edit.replace(uri, new vscode.Range(0, 0, lastLine, lastChar), proposal.proposedContent);
         } catch {
             // New file
             edit.createFile(uri, { contents: Buffer.from(proposal.proposedContent, 'utf-8') });

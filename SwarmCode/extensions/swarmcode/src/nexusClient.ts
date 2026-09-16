@@ -1,7 +1,8 @@
 import * as http from 'http';
+import * as https from 'https';
 import {
     NodeInfo, ClusterTopology, WorkspaceScope, FileEntry,
-    IngestedContext, CollaborationResult, ChatMessage, NexusEvent, NexusTask
+    IngestedContext, CollaborationResult, ChatMessage, NexusTask
 } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -22,18 +23,23 @@ export class NexusClient {
 
     // ── Low-level helpers ─────────────────────────────────────────────────────
 
+    /** Pick http or https transport based on the URL scheme. */
+    private transport(): typeof http | typeof https {
+        return this.baseUrl.startsWith('https') ? https : http;
+    }
+
     private async get<T>(path: string): Promise<T> {
         return new Promise((resolve, reject) => {
             const url = new URL(this.baseUrl + path);
             const options = {
                 hostname: url.hostname,
-                port: parseInt(url.port || '8090', 10),
+                port: parseInt(url.port || (url.protocol === 'https:' ? '443' : '8090'), 10),
                 path: url.pathname + url.search,
                 method: 'GET',
                 headers: { 'Accept': 'application/json' },
                 timeout: 10000,
             };
-            const req = http.request(options, (res) => {
+            const req = this.transport().request(options, (res) => {
                 let data = '';
                 res.on('data', (chunk) => { data += chunk; });
                 res.on('end', () => {
@@ -42,7 +48,7 @@ export class NexusClient {
                         return;
                     }
                     try { resolve(JSON.parse(data) as T); }
-                    catch (e) { reject(new Error(`JSON parse error: ${data}`)); }
+                    catch (e) { reject(new Error(`JSON parse error: ${data.slice(0, 200)}`)); }
                 });
             });
             req.on('error', reject);
@@ -57,7 +63,7 @@ export class NexusClient {
             const url = new URL(this.baseUrl + path);
             const options = {
                 hostname: url.hostname,
-                port: parseInt(url.port || '8090', 10),
+                port: parseInt(url.port || (url.protocol === 'https:' ? '443' : '8090'), 10),
                 path: url.pathname + url.search,
                 method: 'POST',
                 headers: {
@@ -67,16 +73,16 @@ export class NexusClient {
                 },
                 timeout: 120000,
             };
-            const req = http.request(options, (res) => {
+            const req = this.transport().request(options, (res) => {
                 let responseData = '';
                 res.on('data', (chunk) => { responseData += chunk; });
                 res.on('end', () => {
                     if (res.statusCode && res.statusCode >= 400) {
-                        reject(new Error(`HTTP ${res.statusCode}: ${responseData}`));
+                        reject(new Error(`HTTP ${res.statusCode}: ${responseData.slice(0, 200)}`));
                         return;
                     }
                     try { resolve(JSON.parse(responseData) as T); }
-                    catch (e) { reject(new Error(`JSON parse error: ${responseData}`)); }
+                    catch (e) { reject(new Error(`JSON parse error: ${responseData.slice(0, 200)}`)); }
                 });
             });
             req.on('error', reject);
@@ -86,70 +92,77 @@ export class NexusClient {
         });
     }
 
-    /** Streaming POST — yields lines of text as they arrive (SSE or newline-delimited JSON). */
-    public async *postStream(path: string, body: unknown): AsyncIterableIterator<string> {
+    /**
+     * Streaming POST — yields text chunks as they arrive (SSE / newline-delimited JSON).
+     * Uses a proper queue + async-notifier so the generator never spin-polls.
+     */
+    public postStream(path: string, body: unknown): AsyncIterableIterator<string> {
         const data = JSON.stringify(body);
         const url = new URL(this.baseUrl + path);
 
-        yield* await new Promise<AsyncIterableIterator<string>>((resolve, reject) => {
-            const options = {
-                hostname: url.hostname,
-                port: parseInt(url.port || '8090', 10),
-                path: url.pathname,
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Content-Length': Buffer.byteLength(data),
-                    'Accept': 'text/event-stream',
-                },
-                timeout: 300000,
-            };
+        // Queue of chunks + a waiter slot
+        const queue: string[] = [];
+        let done = false;
+        let error: Error | undefined;
+        let waiter: (() => void) | null = null;
 
-            const chunks: string[] = [];
-            let resolveNext: ((value: IteratorResult<string>) => void) | null = null;
-            let done = false;
+        const notify = () => {
+            if (waiter) {
+                const w = waiter;
+                waiter = null;
+                w();
+            }
+        };
 
-            async function* gen(): AsyncIterableIterator<string> {
-                while (true) {
-                    if (chunks.length > 0) {
-                        yield chunks.shift()!;
-                    } else if (done) {
-                        return;
-                    } else {
-                        await new Promise<void>((r) => {
-                            resolveNext = (result) => {
-                                resolveNext = null;
-                                r();
-                            };
-                        });
+        const options = {
+            hostname: url.hostname,
+            port: parseInt(url.port || (url.protocol === 'https:' ? '443' : '8090'), 10),
+            path: url.pathname + url.search,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(data),
+                'Accept': 'text/event-stream',
+            },
+            timeout: 300000,
+        };
+
+        const req = this.transport().request(options, (res) => {
+            let buffer = '';
+            res.on('data', (chunk: Buffer) => {
+                buffer += chunk.toString('utf-8');
+                const lines = buffer.split('\n');
+                buffer = lines.pop() ?? '';
+                for (const line of lines) {
+                    const trimmed = line.replace(/^data:\s*/, '').trim();
+                    if (trimmed && trimmed !== '[DONE]') {
+                        queue.push(trimmed);
+                        notify();
                     }
                 }
-            }
-
-            const req = http.request(options, (res) => {
-                let buffer = '';
-                res.on('data', (chunk: Buffer) => {
-                    buffer += chunk.toString('utf-8');
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop() ?? '';
-                    for (const line of lines) {
-                        const trimmed = line.replace(/^data:\s*/, '').trim();
-                        if (trimmed && trimmed !== '[DONE]') {
-                            chunks.push(trimmed);
-                            if (resolveNext) { resolveNext({ value: trimmed, done: false }); }
-                        }
-                    }
-                });
-                res.on('end', () => {
-                    done = true;
-                    if (resolveNext) { resolveNext({ value: undefined as any, done: true }); }
-                });
-                resolve(gen());
             });
-            req.on('error', (e) => { done = true; reject(e); });
-            req.write(data);
-            req.end();
+            res.on('end', () => { done = true; notify(); });
+            res.on('error', (e) => { error = e as Error; done = true; notify(); });
         });
+        req.on('error', (e) => { error = e as Error; done = true; notify(); });
+        req.write(data);
+        req.end();
+
+        async function* gen(): AsyncIterableIterator<string> {
+            while (true) {
+                if (queue.length > 0) {
+                    yield queue.shift()!;
+                } else if (done) {
+                    if (error) { throw error; }
+                    return;
+                } else {
+                    // Wait for the next chunk or stream end
+                    await new Promise<void>((r) => { waiter = r; });
+                }
+            }
+        }
+
+        return gen();
     }
 
     // ── Node & Cluster ────────────────────────────────────────────────────────
@@ -235,7 +248,7 @@ export class NexusClient {
             try {
                 const parsed = JSON.parse(line);
                 const delta = parsed?.choices?.[0]?.delta?.content;
-                if (delta) { yield delta; }
+                if (typeof delta === 'string' && delta.length > 0) { yield delta; }
             } catch {
                 // Non-JSON SSE line — skip
             }

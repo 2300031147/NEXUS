@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import { NexusClient } from './nexusClient';
 import { ContextEngine } from './contextEngine';
-import { NexusTask } from './types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Inline Actions — CodeLens above functions and right-click context menu

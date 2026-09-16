@@ -14,8 +14,12 @@ export class TaskViewProvider implements vscode.WebviewViewProvider {
         private readonly extensionUri: vscode.Uri,
         private readonly taskManager: TaskManager,
     ) {
-        taskManager.onTaskUpdated.event((session) => {
-            this._view?.webview.postMessage({ command: 'taskUpdate', session });
+        taskManager.onTaskUpdated.event((_session) => {
+            // Send ALL sessions on every update so the webview maintains full list state
+            this._view?.webview.postMessage({
+                command: 'sessions',
+                sessions: taskManager.getSessions(),
+            });
         });
     }
 

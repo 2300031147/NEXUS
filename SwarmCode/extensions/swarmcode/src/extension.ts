@@ -34,6 +34,7 @@ export function activate(context: vscode.ExtensionContext) {
     const toolGateway  = new ToolGateway(context);
     const taskManager  = new TaskManager(nexusClient, toolGateway);
     const diagWatcher  = new DiagnosticsWatcher(nexusClient, contextEng);
+    context.subscriptions.push(taskManager, diagWatcher, toolGateway);
 
     // ── 8 native view providers ──────────────────────────────────────────────
     const chatProvider    = new ChatViewProvider(context.extensionUri, nexusClient, contextEng);
