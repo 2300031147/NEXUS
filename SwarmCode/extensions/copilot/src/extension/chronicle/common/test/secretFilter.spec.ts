@@ -86,9 +86,9 @@ describe('filterSecrets', () => {
 	});
 
 	it('redacts MongoDB connection strings', () => {
-		const input = 'db: mongodb+srv://admin:secretpass@cluster0.abc.mongodb.net/mydb';
+		const input = 'db: mongodb+srv://admin:dummy_pass@cluster0.example.com/mydb';
 		const result = filterSecrets(input);
-		expect(result).not.toContain('secretpass');
+		expect(result).not.toContain('dummy_pass');
 		expect(result).toContain('******');
 	});
 
