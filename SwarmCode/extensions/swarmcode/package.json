@@ -1,46 +1,296 @@
 {
   "name": "swarmcode",
-  "displayName": "SwarmCode",
-  "description": "SwarmCode - Autonomous Multi-Agent Collaborative IDE Extension",
-  "version": "1.0.0",
+  "displayName": "NEXUS",
+  "description": "NEXUS — AI-native workbench powered by the MIND multi-model intelligence cluster",
+  "version": "2.0.0",
   "publisher": "vscode",
   "engines": {
     "vscode": "^1.80.0"
   },
-  "categories": [
-    "Other"
-  ],
-  "activationEvents": [
-    "onStartupFinished"
-  ],
+  "categories": ["Other", "Machine Learning"],
+  "activationEvents": ["onStartupFinished"],
   "main": "./out/extension.js",
   "contributes": {
+
+    "configuration": {
+      "title": "NEXUS",
+      "properties": {
+        "nexus.hostUrl": {
+          "type": "string",
+          "default": "http://localhost:8090",
+          "description": "URL of the NEXUS / MIND cluster server (cluster_server.py).",
+          "order": 1
+        },
+        "nexus.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect to the NEXUS host on startup.",
+          "order": 2
+        },
+        "nexus.contextDepth": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Maximum number of related files to include in context.",
+          "order": 3
+        },
+        "nexus.codeLensEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show NEXUS inline actions (CodeLens) above function and class declarations.",
+          "order": 4
+        },
+        "nexus.approvalRequired": {
+          "type": "boolean",
+          "default": true,
+          "description": "Require user approval before applying agent-proposed file edits.",
+          "order": 5
+        }
+      }
+    },
+
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "swarmcode",
-          "title": "SwarmCode",
-          "icon": "$(hub)"
+          "id": "nexus",
+          "title": "NEXUS",
+          "icon": "$(hubot)"
         }
       ]
     },
+
     "views": {
-      "swarmcode": [
+      "nexus": [
         {
-          "id": "swarmcode.clusterView",
-          "name": "Cluster Nodes"
+          "type": "webview",
+          "id": "nexus.chatView",
+          "name": "Chat",
+          "icon": "$(comment-discussion)"
         },
         {
-          "id": "swarmcode.planView",
-          "name": "Implementation Plan"
+          "type": "webview",
+          "id": "nexus.agentView",
+          "name": "Agents",
+          "icon": "$(organization)"
         },
         {
-          "id": "swarmcode.discussionView",
-          "name": "Live Discussion"
+          "type": "webview",
+          "id": "nexus.taskView",
+          "name": "Tasks",
+          "icon": "$(tasklist)"
+        },
+        {
+          "type": "webview",
+          "id": "nexus.contextView",
+          "name": "Context",
+          "icon": "$(file-code)"
+        },
+        {
+          "type": "webview",
+          "id": "nexus.filesView",
+          "name": "Files",
+          "icon": "$(folder)"
+        },
+        {
+          "type": "webview",
+          "id": "nexus.clusterView",
+          "name": "Cluster",
+          "icon": "$(server)"
+        },
+        {
+          "type": "webview",
+          "id": "nexus.infrastructureView",
+          "name": "Infrastructure",
+          "icon": "$(circuit-board)"
+        },
+        {
+          "type": "webview",
+          "id": "nexus.memoryView",
+          "name": "Memory",
+          "icon": "$(database)"
         }
       ]
-    }
+    },
+
+    "commands": [
+      {
+        "command": "nexus.ask",
+        "title": "NEXUS: Ask",
+        "icon": "$(hubot)",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.explainSelection",
+        "title": "NEXUS: Explain Selection",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.fixSelection",
+        "title": "NEXUS: Fix Selection",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.refactor",
+        "title": "NEXUS: Refactor",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.generateTests",
+        "title": "NEXUS: Generate Tests",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.reviewFile",
+        "title": "NEXUS: Review File",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.reviewWorkspace",
+        "title": "NEXUS: Review Workspace",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.runConsensus",
+        "title": "NEXUS: Run Consensus (Ask Team)",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.submitTask",
+        "title": "NEXUS: Submit Task",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.ingestContext",
+        "title": "NEXUS: Ingest Workspace Context",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.showCluster",
+        "title": "NEXUS: Show Cluster",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.showInfrastructure",
+        "title": "NEXUS: Show Infrastructure",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.showMemory",
+        "title": "NEXUS: Show Memory",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.showActiveModels",
+        "title": "NEXUS: Show Active Models",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.acceptDiff",
+        "title": "NEXUS: Accept Diff",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.rejectDiff",
+        "title": "NEXUS: Reject Diff",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.showInlineMenu",
+        "title": "NEXUS: Inline Actions",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.sendToChat",
+        "title": "NEXUS: Send to Chat",
+        "category": "NEXUS"
+      },
+      {
+        "command": "nexus.fixDiagnostic",
+        "title": "NEXUS: Fix Diagnostic",
+        "category": "NEXUS"
+      }
+    ],
+
+    "keybindings": [
+      {
+        "command": "nexus.ask",
+        "key": "ctrl+shift+n",
+        "mac": "cmd+shift+n",
+        "when": "editorTextFocus || !inputFocus"
+      },
+      {
+        "command": "nexus.explainSelection",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "nexus.fixSelection",
+        "key": "ctrl+shift+f",
+        "mac": "cmd+shift+f",
+        "when": "editorHasSelection"
+      },
+      {
+        "command": "nexus.runConsensus",
+        "key": "ctrl+shift+k",
+        "mac": "cmd+shift+k"
+      }
+    ],
+
+    "menus": {
+      "editor/context": [
+        {
+          "submenu": "nexus.editorContext",
+          "group": "nexus@1",
+          "when": "editorTextFocus"
+        }
+      ],
+      "nexus.editorContext": [
+        {
+          "command": "nexus.explainSelection",
+          "when": "editorHasSelection",
+          "group": "nexus_selection@1"
+        },
+        {
+          "command": "nexus.fixSelection",
+          "when": "editorHasSelection",
+          "group": "nexus_selection@2"
+        },
+        {
+          "command": "nexus.refactor",
+          "when": "editorHasSelection",
+          "group": "nexus_selection@3"
+        },
+        {
+          "command": "nexus.generateTests",
+          "when": "editorHasSelection",
+          "group": "nexus_selection@4"
+        },
+        {
+          "command": "nexus.reviewFile",
+          "group": "nexus_file@1"
+        },
+        {
+          "command": "nexus.runConsensus",
+          "group": "nexus_team@1"
+        },
+        {
+          "command": "nexus.ask",
+          "group": "nexus_team@2"
+        }
+      ]
+    },
+
+    "submenus": [
+      {
+        "id": "nexus.editorContext",
+        "label": "NEXUS"
+      }
+    ]
+
   },
+
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
