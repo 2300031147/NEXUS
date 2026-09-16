@@ -1,0 +1,12 @@
+{
+    "node_role": "coder",
+    "node_model": "Qwen-2.5-Coder-32B",
+    "http_port": 8000,
+    "llama_server_path": "../build/bin/llama-server",
+    "llama_model_path": "../../models/qwen2.5-coder-32b-q4_k_m.gguf",
+    "tiered_cache": {
+        "ssd_enabled": true,
+        "ram_enabled": true,
+        "nvme_path": "/mnt/nvme0n1/llama_cache"
+    }
+}

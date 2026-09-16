@@ -1,0 +1,54 @@
+{
+  "name": "swarmcode",
+  "displayName": "SwarmCode",
+  "description": "SwarmCode - Autonomous Multi-Agent Collaborative IDE Extension",
+  "version": "1.0.0",
+  "publisher": "vscode",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "swarmcode",
+          "title": "SwarmCode",
+          "icon": "$(hub)"
+        }
+      ]
+    },
+    "views": {
+      "swarmcode": [
+        {
+          "id": "swarmcode.clusterView",
+          "name": "Cluster Nodes"
+        },
+        {
+          "id": "swarmcode.planView",
+          "name": "Implementation Plan"
+        },
+        {
+          "id": "swarmcode.discussionView",
+          "name": "Live Discussion"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.80.0",
+    "@types/node": "18.x",
+    "typescript": "^5.1.3"
+  }
+}

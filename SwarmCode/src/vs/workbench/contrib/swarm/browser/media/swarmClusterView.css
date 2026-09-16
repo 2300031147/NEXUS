@@ -1,0 +1,51 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+.swarm-view {
+	padding: 0 12px 12px;
+}
+
+.swarm-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin: 8px 0;
+}
+
+.swarm-section-title {
+	font-weight: 600;
+	margin: 12px 0 4px;
+}
+
+.swarm-status,
+.swarm-scope,
+.swarm-plan {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 0;
+}
+
+.swarm-node {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 2px 0;
+	cursor: pointer;
+}
+
+.swarm-node-reachability {
+	margin-left: auto;
+	opacity: 0.7;
+}
+
+.swarm-node-details {
+	padding: 0 0 4px 22px;
+	opacity: 0.9;
+}
+
+.swarm-error {
+	color: var(--vscode-errorForeground);
+}
