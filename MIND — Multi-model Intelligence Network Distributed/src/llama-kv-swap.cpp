@@ -660,6 +660,20 @@ llama_kv_tiered_manager::llama_kv_tiered_manager(
         max_ram_bytes,
         max_swap_size);
 
+    if (topology.unified_memory) {
+        size_t budget = HardwareProfile::compute_uma_budget(topology);
+        HardwareProfile::enforce_uma_budget(tiers, budget);
+        for (const auto & tier : tiers) {
+            if (tier.type == CacheTierType::WARM && tier.unified) {
+                if (tier.capacity < max_ram_bytes) {
+                    max_ram_bytes = tier.capacity;
+                }
+            }
+        }
+        fprintf(stderr, "%s: UMA budget enforced: %.2f GB for HOT+WARM combined\n",
+                __func__, (double)budget / (1024.0 * 1024.0 * 1024.0));
+    }
+
     store = std::make_unique<llama_kv_swap_store>(swap_path, max_swap_size, block_bytes, engine);
     allocate_staging_buffer();
 
@@ -765,6 +779,239 @@ size_t llama_kv_tiered_manager::calculate_block_bytes() const {
         total += (LLAMA_KV_SWAP_PAGE_ALIGNMENT - remainder);
     }
     return total;
+}
+
+void llama_kv_tiered_manager::serialize_block_to_buffer(
+        const llama_kv_block_meta & meta,
+        const std::vector<ggml_tensor *> & k_layers,
+        const std::vector<ggml_tensor *> & v_layers,
+        void * out_buf) {
+
+    uint8_t * buf_ptr = reinterpret_cast<uint8_t *>(out_buf);
+    size_t buf_offset = 0;
+    const uint32_t eff_cell = meta.cell_start;
+
+    for (uint32_t il = 0; il < n_layers && il < k_layers.size(); ++il) {
+        ggml_tensor * k = k_layers[il];
+        ggml_tensor * v = (il < v_layers.size()) ? v_layers[il] : nullptr;
+
+        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
+        const size_t k_row_size = ggml_row_size(type_k, n_embd_k_gqa);
+        const size_t k_block_size = meta.id.n_tokens * k_row_size;
+
+        if (use_turboquant) {
+            std::vector<uint8_t> raw_k(k_block_size, 0);
+            if (k) {
+                const size_t k_offset = eff_cell * k_row_size;
+                if (k_offset + k_block_size <= ggml_nbytes(k)) {
+                    ggml_backend_tensor_get(k, raw_k.data(), k_offset, k_block_size);
+                }
+            }
+            std::vector<float> k_f32(meta.id.n_tokens * n_embd_k_gqa, 0.0f);
+            if (type_k == GGML_TYPE_F32) {
+                std::memcpy(k_f32.data(), raw_k.data(), k_f32.size() * sizeof(float));
+            } else if (type_k == GGML_TYPE_F16) {
+                ggml_fp16_to_fp32_row((const ggml_fp16_t *) raw_k.data(), k_f32.data(), k_f32.size());
+            } else if (ggml_get_type_traits(type_k)->to_float) {
+                ggml_get_type_traits(type_k)->to_float(raw_k.data(), k_f32.data(), k_f32.size());
+            }
+
+            const size_t k_packed_len = llama_turboquant::get_head_packed_bytes(n_embd_k_gqa, tq_mode_k);
+            for (uint32_t t = 0; t < meta.id.n_tokens; ++t) {
+                float norm = 0.0f;
+                llama_turboquant::quantize_head(k_f32.data() + t * n_embd_k_gqa, n_embd_k_gqa, tq_mode_k, buf_ptr + buf_offset + sizeof(float), norm);
+                std::memcpy(buf_ptr + buf_offset, &norm, sizeof(float));
+                buf_offset += sizeof(float) + k_packed_len;
+            }
+        } else {
+            if (k) {
+                const size_t k_offset = eff_cell * k_row_size;
+                if (k_offset + k_block_size <= ggml_nbytes(k)) {
+                    ggml_backend_tensor_get(k, buf_ptr + buf_offset, k_offset, k_block_size);
+                }
+            }
+            buf_offset += k_block_size;
+        }
+
+        const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);
+        const size_t v_row_size = ggml_row_size(type_v, n_embd_v_gqa);
+        const size_t v_block_size = v_trans ? (n_embd_v_gqa * ggml_row_size(type_v, meta.id.n_tokens)) : (meta.id.n_tokens * v_row_size);
+
+        if (use_turboquant) {
+            std::vector<float> v_f32(meta.id.n_tokens * n_embd_v_gqa, 0.0f);
+            if (v) {
+                if (!v_trans) {
+                    std::vector<uint8_t> raw_v(v_block_size, 0);
+                    const size_t v_offset = eff_cell * v_row_size;
+                    if (v_offset + v_block_size <= ggml_nbytes(v)) {
+                        ggml_backend_tensor_get(v, raw_v.data(), v_offset, v_block_size);
+                    }
+                    if (type_v == GGML_TYPE_F32) {
+                        std::memcpy(v_f32.data(), raw_v.data(), v_f32.size() * sizeof(float));
+                    } else if (type_v == GGML_TYPE_F16) {
+                        ggml_fp16_to_fp32_row((const ggml_fp16_t *) raw_v.data(), v_f32.data(), v_f32.size());
+                    } else if (ggml_get_type_traits(type_v)->to_float) {
+                        ggml_get_type_traits(type_v)->to_float(raw_v.data(), v_f32.data(), v_f32.size());
+                    }
+                } else {
+                    const size_t v_stride = ggml_row_size(type_v, kv_size);
+                    const size_t slice_size = ggml_row_size(type_v, meta.id.n_tokens);
+                    std::vector<uint8_t> temp_raw(slice_size, 0);
+                    std::vector<float> temp_f32(meta.id.n_tokens, 0.0f);
+
+                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
+                        const size_t v_offset = j * v_stride + ggml_row_size(type_v, eff_cell);
+                        if (v_offset + slice_size <= ggml_nbytes(v)) {
+                            ggml_backend_tensor_get(v, temp_raw.data(), v_offset, slice_size);
+                        }
+                        
+                        if (type_v == GGML_TYPE_F32) {
+                            std::memcpy(temp_f32.data(), temp_raw.data(), slice_size);
+                        } else if (type_v == GGML_TYPE_F16) {
+                            ggml_fp16_to_fp32_row((const ggml_fp16_t *) temp_raw.data(), temp_f32.data(), temp_f32.size());
+                        } else if (ggml_get_type_traits(type_v)->to_float) {
+                            ggml_get_type_traits(type_v)->to_float(temp_raw.data(), temp_f32.data(), temp_f32.size());
+                        }
+
+                        for (uint32_t t = 0; t < meta.id.n_tokens; ++t) {
+                            v_f32[t * n_embd_v_gqa + j] = temp_f32[t];
+                        }
+                    }
+                }
+            }
+
+            const size_t v_packed_len = llama_turboquant::get_head_packed_bytes(n_embd_v_gqa, tq_mode_v);
+            for (uint32_t t = 0; t < meta.id.n_tokens; ++t) {
+                float norm = 0.0f;
+                llama_turboquant::quantize_head(v_f32.data() + t * n_embd_v_gqa, n_embd_v_gqa, tq_mode_v, buf_ptr + buf_offset + sizeof(float), norm);
+                std::memcpy(buf_ptr + buf_offset, &norm, sizeof(float));
+                buf_offset += sizeof(float) + v_packed_len;
+            }
+        } else {
+            if (v) {
+                if (!v_trans) {
+                    const size_t v_offset = eff_cell * v_row_size;
+                    if (v_offset + v_block_size <= ggml_nbytes(v)) {
+                        ggml_backend_tensor_get(v, buf_ptr + buf_offset, v_offset, v_block_size);
+                    }
+                } else {
+                    const size_t v_stride = ggml_row_size(type_v, kv_size);
+                    const size_t slice_size = ggml_row_size(type_v, meta.id.n_tokens);
+                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
+                        const size_t v_offset = j * v_stride + ggml_row_size(type_v, eff_cell);
+                        if (v_offset + slice_size <= ggml_nbytes(v)) {
+                            ggml_backend_tensor_get(v, buf_ptr + buf_offset + j * slice_size, v_offset, slice_size);
+                        }
+                    }
+                }
+            }
+            buf_offset += v_block_size;
+        }
+    }
+
+    if (buf_offset < block_bytes) {
+        std::memset(buf_ptr + buf_offset, 0, block_bytes - buf_offset);
+    }
+}
+
+bool llama_kv_tiered_manager::is_uma_zero_copy() const {
+    return !HardwareProfile::requires_physical_copy_for_warm(topology);
+}
+
+bool llama_kv_tiered_manager::demote_to_warm_zero_copy(const llama_kv_block_id & target_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+
+    auto it = blocks.find(target_id);
+    if (it == blocks.end() || it->second.loc != llama_kv_block_loc::HOT_VRAM) {
+        return false;
+    }
+    
+    if (used_ram_bytes + block_bytes > max_ram_bytes) {
+        return false;
+    }
+
+    auto & meta = it->second;
+    meta.set_tier(CacheTierType::WARM);
+    meta.size = block_bytes;
+    meta.dirty = false;
+    meta.ram_ptr = nullptr;
+
+    auto lru_it = lru_map.find(target_id);
+    if (lru_it != lru_map.end()) {
+        lru_list.erase(lru_it->second);
+        lru_map.erase(lru_it);
+    }
+
+    auto warm_it = warm_ram_map.find(target_id);
+    if (warm_it != warm_ram_map.end()) {
+        warm_ram_list.erase(warm_it->second);
+        warm_ram_map.erase(warm_it);
+    }
+    warm_ram_list.push_front(target_id);
+    warm_ram_map[target_id] = warm_ram_list.begin();
+
+    used_ram_bytes += block_bytes;
+
+    for (auto & tier : tiers) {
+        if (tier.type == CacheTierType::HOT && tier.unified) {
+            tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+        }
+        if (tier.type == CacheTierType::WARM && tier.unified) {
+            tier.used += block_bytes;
+        }
+    }
+
+    return true;
+}
+
+bool llama_kv_tiered_manager::promote_from_warm_zero_copy(const llama_kv_block_id & target_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+
+    auto it = blocks.find(target_id);
+    if (it == blocks.end() || it->second.loc != llama_kv_block_loc::WARM_RAM) {
+        return false;
+    }
+
+    auto & meta = it->second;
+    meta.set_tier(CacheTierType::HOT);
+    meta.access_count++;
+    meta.pinned = true;
+    meta.access_ts = ++current_ts;
+
+    auto warm_it = warm_ram_map.find(target_id);
+    if (warm_it != warm_ram_map.end()) {
+        warm_ram_list.erase(warm_it->second);
+        warm_ram_map.erase(warm_it);
+    }
+
+    if (meta.ram_ptr) {
+        llama_kv_swap_aligned_free(meta.ram_ptr);
+        meta.ram_ptr = nullptr;
+    }
+
+    if (used_ram_bytes >= block_bytes) {
+        used_ram_bytes -= block_bytes;
+    } else {
+        used_ram_bytes = 0;
+    }
+
+    auto lru_it = lru_map.find(target_id);
+    if (lru_it != lru_map.end()) {
+        lru_list.erase(lru_it->second);
+    }
+    lru_list.push_front(target_id);
+    lru_map[target_id] = lru_list.begin();
+
+    for (auto & tier : tiers) {
+        if (tier.type == CacheTierType::WARM && tier.unified) {
+            tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+        }
+        if (tier.type == CacheTierType::HOT && tier.unified) {
+            tier.used += block_bytes;
+        }
+    }
+
+    return true;
 }
 
 void llama_kv_tiered_manager::register_block_tokens(
@@ -1068,134 +1315,11 @@ bool llama_kv_tiered_manager::evict_lru_block(
     const llama_kv_block_id target_id = *it;
     auto & meta = blocks[target_id];
 
-    uint8_t * buf_ptr = reinterpret_cast<uint8_t *>(io_buffer);
-    size_t buf_offset = 0;
+    serialize_block_to_buffer(meta, k_tensors, v_tensors, io_buffer);
 
-    const uint32_t eff_cell = meta.cell_start;
+    bool went_to_cold = false;
 
-    for (uint32_t il = 0; il < n_layers && il < k_tensors.size(); ++il) {
-        ggml_tensor * k = k_tensors[il];
-        ggml_tensor * v = (il < v_tensors.size()) ? v_tensors[il] : nullptr;
-
-        const uint32_t n_embd_k_gqa = hparams.n_embd_k_gqa(il);
-        const size_t k_row_size = ggml_row_size(type_k, n_embd_k_gqa);
-        const size_t k_block_size = meta.id.n_tokens * k_row_size;
-
-        if (use_turboquant) {
-            std::vector<uint8_t> raw_k(k_block_size, 0);
-            if (k) {
-                const size_t k_offset = eff_cell * k_row_size;
-                if (k_offset + k_block_size <= ggml_nbytes(k)) {
-                    ggml_backend_tensor_get(k, raw_k.data(), k_offset, k_block_size);
-                }
-            }
-            std::vector<float> k_f32(meta.id.n_tokens * n_embd_k_gqa, 0.0f);
-            if (type_k == GGML_TYPE_F32) {
-                std::memcpy(k_f32.data(), raw_k.data(), k_f32.size() * sizeof(float));
-            } else if (type_k == GGML_TYPE_F16) {
-                ggml_fp16_to_fp32_row((const ggml_fp16_t *) raw_k.data(), k_f32.data(), k_f32.size());
-            } else if (ggml_get_type_traits(type_k)->to_float) {
-                ggml_get_type_traits(type_k)->to_float(raw_k.data(), k_f32.data(), k_f32.size());
-            }
-
-            const size_t k_packed_len = llama_turboquant::get_head_packed_bytes(n_embd_k_gqa, tq_mode_k);
-            for (uint32_t t = 0; t < meta.id.n_tokens; ++t) {
-                float norm = 0.0f;
-                llama_turboquant::quantize_head(k_f32.data() + t * n_embd_k_gqa, n_embd_k_gqa, tq_mode_k, buf_ptr + buf_offset + sizeof(float), norm);
-                std::memcpy(buf_ptr + buf_offset, &norm, sizeof(float));
-                buf_offset += sizeof(float) + k_packed_len;
-            }
-        } else {
-            if (k) {
-                const size_t k_offset = eff_cell * k_row_size;
-                if (k_offset + k_block_size <= ggml_nbytes(k)) {
-                    ggml_backend_tensor_get(k, buf_ptr + buf_offset, k_offset, k_block_size);
-                }
-            }
-            buf_offset += k_block_size;
-        }
-
-        const uint32_t n_embd_v_gqa = hparams.n_embd_v_gqa(il);
-        const size_t v_row_size = ggml_row_size(type_v, n_embd_v_gqa);
-        const size_t v_block_size = v_trans ? (n_embd_v_gqa * ggml_row_size(type_v, meta.id.n_tokens)) : (meta.id.n_tokens * v_row_size);
-
-        if (use_turboquant) {
-            std::vector<float> v_f32(meta.id.n_tokens * n_embd_v_gqa, 0.0f);
-            if (v) {
-                if (!v_trans) {
-                    std::vector<uint8_t> raw_v(v_block_size, 0);
-                    const size_t v_offset = eff_cell * v_row_size;
-                    if (v_offset + v_block_size <= ggml_nbytes(v)) {
-                        ggml_backend_tensor_get(v, raw_v.data(), v_offset, v_block_size);
-                    }
-                    if (type_v == GGML_TYPE_F32) {
-                        std::memcpy(v_f32.data(), raw_v.data(), v_f32.size() * sizeof(float));
-                    } else if (type_v == GGML_TYPE_F16) {
-                        ggml_fp16_to_fp32_row((const ggml_fp16_t *) raw_v.data(), v_f32.data(), v_f32.size());
-                    } else if (ggml_get_type_traits(type_v)->to_float) {
-                        ggml_get_type_traits(type_v)->to_float(raw_v.data(), v_f32.data(), v_f32.size());
-                    }
-                } else {
-                    const size_t v_stride = ggml_row_size(type_v, kv_size);
-                    const size_t slice_size = ggml_row_size(type_v, meta.id.n_tokens);
-                    std::vector<uint8_t> temp_raw(slice_size, 0);
-                    std::vector<float> temp_f32(meta.id.n_tokens, 0.0f);
-
-                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
-                        const size_t v_offset = j * v_stride + ggml_row_size(type_v, eff_cell);
-                        if (v_offset + slice_size <= ggml_nbytes(v)) {
-                            ggml_backend_tensor_get(v, temp_raw.data(), v_offset, slice_size);
-                        }
-                        
-                        if (type_v == GGML_TYPE_F32) {
-                            std::memcpy(temp_f32.data(), temp_raw.data(), slice_size);
-                        } else if (type_v == GGML_TYPE_F16) {
-                            ggml_fp16_to_fp32_row((const ggml_fp16_t *) temp_raw.data(), temp_f32.data(), temp_f32.size());
-                        } else if (ggml_get_type_traits(type_v)->to_float) {
-                            ggml_get_type_traits(type_v)->to_float(temp_raw.data(), temp_f32.data(), temp_f32.size());
-                        }
-
-                        for (uint32_t t = 0; t < meta.id.n_tokens; ++t) {
-                            v_f32[t * n_embd_v_gqa + j] = temp_f32[t];
-                        }
-                    }
-                }
-            }
-
-            const size_t v_packed_len = llama_turboquant::get_head_packed_bytes(n_embd_v_gqa, tq_mode_v);
-            for (uint32_t t = 0; t < meta.id.n_tokens; ++t) {
-                float norm = 0.0f;
-                llama_turboquant::quantize_head(v_f32.data() + t * n_embd_v_gqa, n_embd_v_gqa, tq_mode_v, buf_ptr + buf_offset + sizeof(float), norm);
-                std::memcpy(buf_ptr + buf_offset, &norm, sizeof(float));
-                buf_offset += sizeof(float) + v_packed_len;
-            }
-        } else {
-            if (v) {
-                if (!v_trans) {
-                    const size_t v_offset = eff_cell * v_row_size;
-                    if (v_offset + v_block_size <= ggml_nbytes(v)) {
-                        ggml_backend_tensor_get(v, buf_ptr + buf_offset, v_offset, v_block_size);
-                    }
-                } else {
-                    const size_t v_stride = ggml_row_size(type_v, kv_size);
-                    const size_t slice_size = ggml_row_size(type_v, meta.id.n_tokens);
-                    for (uint32_t j = 0; j < n_embd_v_gqa; ++j) {
-                        const size_t v_offset = j * v_stride + ggml_row_size(type_v, eff_cell);
-                        if (v_offset + slice_size <= ggml_nbytes(v)) {
-                            ggml_backend_tensor_get(v, buf_ptr + buf_offset + j * slice_size, v_offset, slice_size);
-                        }
-                    }
-                }
-            }
-            buf_offset += v_block_size;
-        }
-    }
-
-    if (buf_offset < block_bytes) {
-        memset(buf_ptr + buf_offset, 0, block_bytes - buf_offset);
-    }
-
-    // WARM_RAM Tiering Logic
+    // Allocate RAM buffer and memcpy for WARM_RAM eviction
     if (used_ram_bytes + block_bytes <= max_ram_bytes) {
         // Fits in RAM, allocate and store
         meta.ram_ptr = llama_kv_swap_aligned_malloc(block_bytes);
@@ -1242,6 +1366,15 @@ bool llama_kv_tiered_manager::evict_lru_block(
             
             warm_ram_map.erase(warm_it);
             warm_ram_list.pop_back();
+
+            for (auto & tier : tiers) {
+                if (tier.type == CacheTierType::WARM) {
+                    tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+                }
+                if (tier.type == CacheTierType::COLD) {
+                    tier.used += block_bytes;
+                }
+            }
             
             // Now space is available, store the newly evicted block in WARM_RAM
             meta.ram_ptr = llama_kv_swap_aligned_malloc(block_bytes);
@@ -1269,6 +1402,17 @@ bool llama_kv_tiered_manager::evict_lru_block(
             meta.swap_slot = (uint64_t) slot;
             meta.set_tier(CacheTierType::COLD);
             meta.size = block_bytes;
+            meta.ram_ptr = nullptr;
+            went_to_cold = true;
+        }
+    }
+
+    for (auto & tier : tiers) {
+        if (tier.type == CacheTierType::HOT) {
+            tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+        }
+        if (tier.type == (went_to_cold ? CacheTierType::COLD : CacheTierType::WARM)) {
+            tier.used += block_bytes;
         }
     }
     
@@ -1411,18 +1555,75 @@ bool llama_kv_tiered_manager::swap_in_block(
     auto & meta = it->second;
 
     if (meta.loc == llama_kv_block_loc::WARM_RAM) {
-        if (!meta.ram_ptr) return false;
-        std::memcpy(io_buffer, meta.ram_ptr, block_bytes);
-        
-        // Free WARM_RAM resources
-        llama_kv_swap_aligned_free(meta.ram_ptr);
-        meta.ram_ptr = nullptr;
-        used_ram_bytes -= block_bytes;
-        
-        auto warm_it = warm_ram_map.find(meta.id);
-        if (warm_it != warm_ram_map.end()) {
-            warm_ram_list.erase(warm_it->second);
-            warm_ram_map.erase(warm_it);
+        if (is_uma_zero_copy() && meta.ram_ptr == nullptr && meta.cell_start == cell_start) {
+            // UMA zero-copy: in-place recall without memcpy or dequantization
+            meta.set_tier(CacheTierType::HOT);
+            meta.access_count++;
+            meta.pinned = true;
+            meta.swap_slot = 0;
+            meta.cell_start = cell_start;
+            meta.stream_id = stream_id;
+            meta.access_ts = ++current_ts;
+
+            auto warm_it = warm_ram_map.find(meta.id);
+            if (warm_it != warm_ram_map.end()) {
+                warm_ram_list.erase(warm_it->second);
+                warm_ram_map.erase(warm_it);
+            }
+            if (used_ram_bytes >= block_bytes) {
+                used_ram_bytes -= block_bytes;
+            } else {
+                used_ram_bytes = 0;
+            }
+
+            auto lru_it = lru_map.find(it->first);
+            if (lru_it != lru_map.end()) {
+                lru_list.erase(lru_it->second);
+            }
+            lru_list.push_front(it->first);
+            lru_map[it->first] = lru_list.begin();
+
+            for (auto & tier : tiers) {
+                if (tier.type == CacheTierType::WARM && tier.unified) {
+                    tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+                }
+                if (tier.type == CacheTierType::HOT && tier.unified) {
+                    tier.used += block_bytes;
+                }
+            }
+
+            return true;
+        }
+
+        if (meta.ram_ptr) {
+            std::memcpy(io_buffer, meta.ram_ptr, block_bytes);
+            
+            // Free WARM_RAM resources
+            llama_kv_swap_aligned_free(meta.ram_ptr);
+            meta.ram_ptr = nullptr;
+            used_ram_bytes -= block_bytes;
+            
+            auto warm_it = warm_ram_map.find(meta.id);
+            if (warm_it != warm_ram_map.end()) {
+                warm_ram_list.erase(warm_it->second);
+                warm_ram_map.erase(warm_it);
+            }
+        } else if (is_uma_zero_copy()) {
+            // UMA block cell relocation: serialize from old cell_start into io_buffer
+            serialize_block_to_buffer(meta, k_layers, v_layers, io_buffer);
+
+            auto warm_it = warm_ram_map.find(meta.id);
+            if (warm_it != warm_ram_map.end()) {
+                warm_ram_list.erase(warm_it->second);
+                warm_ram_map.erase(warm_it);
+            }
+            if (used_ram_bytes >= block_bytes) {
+                used_ram_bytes -= block_bytes;
+            } else {
+                used_ram_bytes = 0;
+            }
+        } else {
+            return false;
         }
     } else {
         if (!store->read_block(meta.swap_slot, io_buffer, block_bytes)) {
@@ -1554,6 +1755,11 @@ bool llama_kv_tiered_manager::swap_in_block(
         }
     }
 
+    CacheTierType old_tier;
+    if (meta.loc == llama_kv_block_loc::HOT_VRAM) old_tier = CacheTierType::HOT;
+    else if (meta.loc == llama_kv_block_loc::WARM_RAM) old_tier = CacheTierType::WARM;
+    else old_tier = CacheTierType::COLD;
+
     meta.set_tier(CacheTierType::HOT);
     meta.access_count++;
     meta.pinned = true; // Protect from immediate re-eviction in thrashing cycles
@@ -1568,6 +1774,15 @@ bool llama_kv_tiered_manager::swap_in_block(
     }
     lru_list.push_front(it->first);
     lru_map[it->first] = lru_list.begin();
+
+    for (auto & tier : tiers) {
+        if (tier.type == old_tier) {
+            tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+        }
+        if (tier.type == CacheTierType::HOT) {
+            tier.used += block_bytes;
+        }
+    }
 
     return true;
 }
@@ -1616,6 +1831,18 @@ MemoryPressureAction llama_kv_tiered_manager::check_memory_pressure_and_evict(
                         warm_meta.ram_ptr = nullptr;
                         used_ram_bytes -= block_bytes;
                     }
+                } else if (is_uma_zero_copy()) {
+                    // On UMA, WARM blocks are resident in-place in tensors without separate ram_ptr.
+                    // Directly serialize from tensor cells to SSD.
+                    serialize_block_to_buffer(warm_meta, k_tensors, v_tensors, io_buffer);
+                    if (engine == llama_kv_swap_engine::PINNED_DMA || engine == llama_kv_swap_engine::POSIX_ALIGNED) {
+                        write_ok = store->write_block_direct((uint64_t) warm_slot, io_buffer, block_bytes);
+                    } else {
+                        write_ok = store->write_block((uint64_t) warm_slot, io_buffer, block_bytes);
+                    }
+                    if (write_ok) {
+                        used_ram_bytes = (used_ram_bytes >= block_bytes) ? used_ram_bytes - block_bytes : 0;
+                    }
                 } else {
                     write_ok = true;
                 }
@@ -1626,6 +1853,15 @@ MemoryPressureAction llama_kv_tiered_manager::check_memory_pressure_and_evict(
                     warm_ram_map.erase(warm_it);
                     warm_ram_list.pop_back();
                     n_evictions++;
+
+                    for (auto & tier : tiers) {
+                        if (tier.type == CacheTierType::WARM) {
+                            tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+                        }
+                        if (tier.type == CacheTierType::COLD) {
+                            tier.used += block_bytes;
+                        }
+                    }
                 } else {
                     store->free_slot((uint64_t) warm_slot);
                     break;
@@ -1657,6 +1893,14 @@ void llama_kv_tiered_manager::remove_seq(llama_seq_id seq_id, llama_pos p0, llam
 
     index.remove_seq(seq_id, p0, p1, block_size);
 
+    auto dec_tier = [&](CacheTierType t) {
+        for (auto & tier : tiers) {
+            if (tier.type == t) {
+                tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+            }
+        }
+    };
+
     for (auto it = blocks.begin(); it != blocks.end();) {
         const bool match_seq = (it->first.seq_id == seq_id || seq_id == -1);
         const llama_pos block_end = it->first.pos_start + (it->first.n_tokens > 0 ? (llama_pos) it->first.n_tokens : (llama_pos) block_size);
@@ -1668,6 +1912,7 @@ void llama_kv_tiered_manager::remove_seq(llama_seq_id seq_id, llama_pos p0, llam
             }
             if (it->second.loc == llama_kv_block_loc::COLD_SSD) {
                 store->free_slot(it->second.swap_slot);
+                dec_tier(CacheTierType::COLD);
             } else if (it->second.loc == llama_kv_block_loc::WARM_RAM) {
                 if (it->second.ram_ptr) {
                     llama_kv_swap_aligned_free(it->second.ram_ptr);
@@ -1679,12 +1924,14 @@ void llama_kv_tiered_manager::remove_seq(llama_seq_id seq_id, llama_pos p0, llam
                     warm_ram_list.erase(warm_it->second);
                     warm_ram_map.erase(warm_it);
                 }
+                dec_tier(CacheTierType::WARM);
             } else if (it->second.loc == llama_kv_block_loc::HOT_VRAM) {
                 auto lru_it = lru_map.find(it->first);
                 if (lru_it != lru_map.end()) {
                     lru_list.erase(lru_it->second);
                     lru_map.erase(lru_it);
                 }
+                dec_tier(CacheTierType::HOT);
             }
             index.remove_block(it->first);
             it = blocks.erase(it);
@@ -1698,6 +1945,14 @@ void llama_kv_tiered_manager::shift_seq(llama_seq_id seq_id, llama_pos p0, llama
     std::lock_guard<std::recursive_mutex> lock(mutex);
     seq_active_block.erase(seq_id);
     index.shift_seq(seq_id, p0, p1, delta, block_size);
+
+    auto dec_tier = [&](CacheTierType t) {
+        for (auto & tier : tiers) {
+            if (tier.type == t) {
+                tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+            }
+        }
+    };
 
     std::vector<llama_kv_block_meta> to_shift;
     
@@ -1729,6 +1984,7 @@ void llama_kv_tiered_manager::shift_seq(llama_seq_id seq_id, llama_pos p0, llama
         else if ((p1 < 0 && block_end > p0) || (it->first.pos_start < p1 && block_end > p0)) {
             if (it->second.loc == llama_kv_block_loc::COLD_SSD) {
                 store->free_slot(it->second.swap_slot);
+                dec_tier(CacheTierType::COLD);
             } else if (it->second.loc == llama_kv_block_loc::WARM_RAM) {
                 if (it->second.ram_ptr) {
                     llama_kv_swap_aligned_free(it->second.ram_ptr);
@@ -1740,11 +1996,14 @@ void llama_kv_tiered_manager::shift_seq(llama_seq_id seq_id, llama_pos p0, llama
                     warm_ram_list.erase(warm_it->second);
                     warm_ram_map.erase(warm_it);
                 }
-            }
-            auto lru_it = lru_map.find(it->first);
-            if (lru_it != lru_map.end()) {
-                lru_list.erase(lru_it->second);
-                lru_map.erase(lru_it);
+                dec_tier(CacheTierType::WARM);
+            } else if (it->second.loc == llama_kv_block_loc::HOT_VRAM) {
+                auto lru_it = lru_map.find(it->first);
+                if (lru_it != lru_map.end()) {
+                    lru_list.erase(lru_it->second);
+                    lru_map.erase(lru_it);
+                }
+                dec_tier(CacheTierType::HOT);
             }
             it = blocks.erase(it);
         } else {
@@ -1791,6 +2050,14 @@ void llama_kv_tiered_manager::div_seq(llama_seq_id seq_id, llama_pos p0, llama_p
     seq_active_block.erase(seq_id);
     index.div_seq(seq_id, p0, p1, d, block_size);
 
+    auto dec_tier = [&](CacheTierType t) {
+        for (auto & tier : tiers) {
+            if (tier.type == t) {
+                tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+            }
+        }
+    };
+
     for (auto it = blocks.begin(); it != blocks.end();) {
         if (it->first.seq_id != seq_id) {
             ++it;
@@ -1803,6 +2070,7 @@ void llama_kv_tiered_manager::div_seq(llama_seq_id seq_id, llama_pos p0, llama_p
         if ((p1 < 0 && block_end > p0) || (it->first.pos_start < p1 && block_end > p0)) {
             if (it->second.loc == llama_kv_block_loc::COLD_SSD) {
                 store->free_slot(it->second.swap_slot);
+                dec_tier(CacheTierType::COLD);
             } else if (it->second.loc == llama_kv_block_loc::WARM_RAM) {
                 if (it->second.ram_ptr) {
                     llama_kv_swap_aligned_free(it->second.ram_ptr);
@@ -1814,11 +2082,14 @@ void llama_kv_tiered_manager::div_seq(llama_seq_id seq_id, llama_pos p0, llama_p
                     warm_ram_list.erase(warm_it->second);
                     warm_ram_map.erase(warm_it);
                 }
-            }
-            auto lru_it = lru_map.find(it->first);
-            if (lru_it != lru_map.end()) {
-                lru_list.erase(lru_it->second);
-                lru_map.erase(lru_it);
+                dec_tier(CacheTierType::WARM);
+            } else if (it->second.loc == llama_kv_block_loc::HOT_VRAM) {
+                auto lru_it = lru_map.find(it->first);
+                if (lru_it != lru_map.end()) {
+                    lru_list.erase(lru_it->second);
+                    lru_map.erase(lru_it);
+                }
+                dec_tier(CacheTierType::HOT);
             }
             it = blocks.erase(it);
         } else {
@@ -1846,6 +2117,19 @@ void llama_kv_tiered_manager::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_i
     
     index.cp_seq(seq_id_src, seq_id_dst, p0, p1, block_size);
     
+    auto dec_tier = [&](CacheTierType t) {
+        for (auto & tier : tiers) {
+            if (tier.type == t) {
+                tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+            }
+        }
+    };
+    auto inc_tier = [&](CacheTierType t) {
+        for (auto & tier : tiers) {
+            if (tier.type == t) tier.used += block_bytes;
+        }
+    };
+
     std::vector<llama_kv_block_meta> to_add;
     
     for (auto it = blocks.begin(); it != blocks.end(); ++it) {
@@ -1865,6 +2149,7 @@ void llama_kv_tiered_manager::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_i
                     if (store->read_block(it->second.swap_slot, io_buffer, block_bytes)) {
                         if (store->write_block(new_slot, io_buffer, block_bytes)) {
                             meta.swap_slot = new_slot;
+                            inc_tier(CacheTierType::COLD);
                         } else {
                             store->free_slot(new_slot);
                             continue; // failed to write
@@ -1884,6 +2169,7 @@ void llama_kv_tiered_manager::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_i
                             memcpy(new_ram, meta.ram_ptr, block_bytes);
                             meta.ram_ptr = new_ram;
                             used_ram_bytes += block_bytes;
+                            inc_tier(CacheTierType::WARM);
                         } else {
                             continue; // no space
                         }
@@ -1898,6 +2184,7 @@ void llama_kv_tiered_manager::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_i
                                 meta.swap_slot = new_slot;
                                 meta.loc = llama_kv_block_loc::COLD_SSD;
                                 meta.ram_ptr = nullptr;
+                                inc_tier(CacheTierType::COLD);
                             } else {
                                 store->free_slot(new_slot);
                                 continue;
@@ -1916,11 +2203,17 @@ void llama_kv_tiered_manager::cp_seq(llama_seq_id seq_id_src, llama_seq_id seq_i
     for (const auto & meta : to_add) {
         auto it = blocks.find(meta.id);
         if (it != blocks.end()) {
-            if (it->second.loc == llama_kv_block_loc::WARM_RAM && it->second.ram_ptr) {
-                llama_kv_swap_aligned_free(it->second.ram_ptr);
-                used_ram_bytes -= block_bytes;
+            if (it->second.loc == llama_kv_block_loc::WARM_RAM) {
+                if (it->second.ram_ptr) {
+                    llama_kv_swap_aligned_free(it->second.ram_ptr);
+                    used_ram_bytes -= block_bytes;
+                }
+                dec_tier(CacheTierType::WARM);
             } else if (it->second.loc == llama_kv_block_loc::COLD_SSD) {
                 if (store) store->free_slot(it->second.swap_slot);
+                dec_tier(CacheTierType::COLD);
+            } else if (it->second.loc == llama_kv_block_loc::HOT_VRAM) {
+                dec_tier(CacheTierType::HOT);
             }
             if (warm_ram_map.find(meta.id) != warm_ram_map.end()) {
                 warm_ram_list.erase(warm_ram_map[meta.id]);
@@ -1971,6 +2264,15 @@ bool llama_kv_tiered_manager::save_state(const std::string & meta_path) {
                 warm_meta.swap_slot = (uint64_t) warm_slot;
                 warm_meta.dirty = false;
                 success = true;
+
+                for (auto & tier : tiers) {
+                    if (tier.type == CacheTierType::WARM) {
+                        tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+                    }
+                    if (tier.type == CacheTierType::COLD) {
+                        tier.used += block_bytes;
+                    }
+                }
             } else {
                 store->free_slot((uint64_t) warm_slot);
             }
@@ -2120,6 +2422,9 @@ bool llama_kv_tiered_manager::load_state(const std::string & meta_path) {
     lru_map.clear();
     seq_active_block.clear();
     index.set_signatures({});
+    for (auto & tier : tiers) {
+        tier.used = 0;
+    }
     uint64_t n_blocks;
     if (fread(&n_blocks, sizeof(n_blocks), 1, fp) != 1) {
         fclose(fp); return false;
@@ -2144,6 +2449,10 @@ bool llama_kv_tiered_manager::load_state(const std::string & meta_path) {
         meta.swap_slot = swap_slot;
         meta.dirty = false;
         blocks[id] = meta;
+        
+        for (auto & tier : tiers) {
+            if (tier.type == CacheTierType::COLD) tier.used += block_bytes;
+        }
     }
 
     uint64_t n_sigs;

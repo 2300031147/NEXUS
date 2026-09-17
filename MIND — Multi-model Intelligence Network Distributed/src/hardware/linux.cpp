@@ -112,6 +112,22 @@ MemoryTopology detect_linux_topology() {
         }
     }
 
+    // Check DMI product/board info for Snapdragon laptops (e.g. Lenovo ThinkPad T14s, HP OmniBook X)
+    if (!is_qualcomm_snapdragon && !is_apple_silicon && !is_tegra) {
+        std::string dmi_product = read_first_line("/sys/class/dmi/id/product_name");
+        std::string dmi_board = read_first_line("/sys/class/dmi/id/board_name");
+        std::string dmi_sys = read_first_line("/sys/class/dmi/id/sys_vendor");
+        std::string combined_dmi = dmi_sys + " " + dmi_product + " " + dmi_board;
+        std::transform(combined_dmi.begin(), combined_dmi.end(), combined_dmi.begin(), ::tolower);
+        if (combined_dmi.find("snapdragon") != std::string::npos ||
+            combined_dmi.find("x elite") != std::string::npos ||
+            combined_dmi.find("x plus") != std::string::npos ||
+            combined_dmi.find("qualcomm") != std::string::npos) {
+            is_qualcomm_snapdragon = true;
+            topo.device_model = dmi_product.empty() ? "Qualcomm Snapdragon (DMI)" : dmi_product;
+        }
+    }
+
     // 3. Inspect DRM subsystem (/sys/class/drm) for GPUs and drivers
     bool has_nvidia_dgpu = false;
     bool has_amd_dgpu = false;
@@ -211,7 +227,70 @@ MemoryTopology detect_linux_topology() {
         topo.accelerator = "cpu";
     }
 
-    // 4. Inspect NVMe / Fast Storage capacity
+    // 4. Detect NPU capabilities (FastRPC for Qualcomm Hexagon NPU, Linux accel subsystem)
+    bool has_hexagon_npu = false;
+    try {
+        if (fs::exists("/dev/adsprpc-smd") || fs::exists("/dev/cdsprpc-smd")) {
+            has_hexagon_npu = true;
+        } else if (fs::exists("/sys/class/misc")) {
+            for (const auto & entry : fs::directory_iterator("/sys/class/misc")) {
+                std::string fname = entry.path().filename().string();
+                if (fname.find("fastrpc") != std::string::npos) {
+                    has_hexagon_npu = true;
+                    break;
+                }
+            }
+        }
+        if (!has_hexagon_npu && fs::exists("/sys/class/accel") && !fs::is_empty("/sys/class/accel")) {
+            has_hexagon_npu = true;
+        }
+    } catch (...) {}
+
+    // Populate ComputeTopology
+    topo.compute.has_cpu = true;
+    topo.compute.cpu_backend = "cpu";
+    topo.compute.cpu_arch = topo.architecture;
+
+    if (is_qualcomm_snapdragon || has_msm_gpu) {
+        topo.compute.has_gpu = true;
+        topo.compute.gpu_backend = "adreno";
+        topo.compute.gpu_model = "Qualcomm Adreno GPU";
+        topo.compute.has_npu = true;
+        topo.compute.npu_backend = "hexagon";
+        topo.compute.npu_model = "Qualcomm Hexagon NPU";
+    } else if (is_apple_silicon) {
+        topo.compute.has_gpu = true;
+        topo.compute.gpu_backend = "metal";
+        topo.compute.gpu_model = "Apple M-Series GPU";
+        topo.compute.has_npu = true;
+        topo.compute.npu_backend = "coreml";
+        topo.compute.npu_model = "Apple Neural Engine (ANE)";
+    } else if (is_tegra) {
+        topo.compute.has_gpu = true;
+        topo.compute.gpu_backend = "cuda";
+        topo.compute.gpu_model = "NVIDIA Tegra / Orin GPU";
+        topo.compute.has_npu = true;
+        topo.compute.npu_backend = "nv_dla";
+        topo.compute.npu_model = "NVIDIA DLA";
+    } else if (has_nvidia_dgpu) {
+        topo.compute.has_gpu = true;
+        topo.compute.gpu_backend = "cuda";
+        topo.compute.gpu_model = "NVIDIA Discrete GPU";
+    } else if (has_amd_dgpu) {
+        topo.compute.has_gpu = true;
+        topo.compute.gpu_backend = "rocm";
+        topo.compute.gpu_model = "AMD Discrete GPU";
+    }
+
+    if (has_hexagon_npu) {
+        topo.compute.has_npu = true;
+        topo.compute.npu_backend = "hexagon";
+        if (topo.compute.npu_model.empty()) {
+            topo.compute.npu_model = "Qualcomm Hexagon NPU";
+        }
+    }
+
+    // 5. Inspect NVMe / Fast Storage capacity
     try {
         if (fs::exists("/sys/block")) {
             for (const auto & entry : fs::directory_iterator("/sys/block")) {

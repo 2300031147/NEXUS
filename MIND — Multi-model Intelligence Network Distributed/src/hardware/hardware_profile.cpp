@@ -184,6 +184,16 @@ std::vector<CacheTier> HardwareProfile::build_cache_tiers(
         }
     }
 
+    if (ptype == HardwareProfileType::UNIFIED_MEMORY ||
+        ptype == HardwareProfileType::ACCELERATOR ||
+        ptype == HardwareProfileType::CPU_ONLY ||
+        topo.unified_memory) {
+        size_t budget = compute_uma_budget(topo);
+        if (budget > 0) {
+            enforce_uma_budget(tiers, budget);
+        }
+    }
+
     return tiers;
 }
 
@@ -191,4 +201,34 @@ bool HardwareProfile::requires_physical_copy_for_warm(const MemoryTopology & top
     // If memory is unified, HOT and WARM share the exact same physical DRAM.
     // Therefore, no physical memory-to-memory copying is required.
     return !topo.unified_memory;
+}
+
+size_t HardwareProfile::compute_uma_budget(const MemoryTopology & topo, float budget_ratio) {
+    if (topo.uma_kv_budget > 0) {
+        return topo.uma_kv_budget;
+    }
+    if (topo.system_memory > 0) {
+        return static_cast<size_t>(static_cast<double>(topo.system_memory) * static_cast<double>(budget_ratio));
+    }
+    return 0;
+}
+
+void HardwareProfile::enforce_uma_budget(std::vector<CacheTier> & tiers, size_t uma_budget) {
+    if (uma_budget == 0) {
+        return;
+    }
+    size_t total_unified = 0;
+    for (const auto & tier : tiers) {
+        if (tier.unified) {
+            total_unified += tier.capacity;
+        }
+    }
+    if (total_unified > uma_budget && total_unified > 0) {
+        double scale = static_cast<double>(uma_budget) / static_cast<double>(total_unified);
+        for (auto & tier : tiers) {
+            if (tier.unified) {
+                tier.capacity = static_cast<size_t>(static_cast<double>(tier.capacity) * scale);
+            }
+        }
+    }
 }

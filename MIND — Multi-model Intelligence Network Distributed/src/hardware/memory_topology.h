@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "compute_topology.h"
 
 // Logical cache tier classification
 enum class CacheTierType : uint8_t {
@@ -28,6 +29,7 @@ struct MemoryTopology {
     bool unified_memory = false;          // true for Apple Silicon, Snapdragon X Elite, APUs, iGPUs
     size_t accelerator_memory = 0;        // dedicated accelerator memory (VRAM) in bytes (0 if pure UMA)
     size_t system_memory = 0;             // host system RAM in bytes
+    size_t uma_kv_budget = 0;             // UMA: max bytes for HOT+WARM combined (0 = use default)
     size_t storage_capacity = 0;          // detected NVMe / fast storage capacity in bytes
     size_t storage_free = 0;              // available free storage in bytes
     std::string accelerator = "cpu";      // "cuda", "metal", "qualcomm", "vulkan", "rocm", "cpu"
@@ -36,4 +38,6 @@ struct MemoryTopology {
     std::string device_model = "Generic"; // specific detected hardware model or SoC name
     size_t host_page_size = 4096;
     bool can_direct_io = true;
+
+    ComputeTopology compute;              // CPU/GPU/NPU compute topology
 };

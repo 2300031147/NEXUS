@@ -299,6 +299,15 @@ public:
     // Check if block is currently on SSD
     bool is_on_ssd(llama_seq_id seq_id, llama_pos pos_start) const;
 
+    // Returns true if the current hardware profile uses zero-copy for HOT→WARM demotion
+    bool is_uma_zero_copy() const;
+
+    // UMA-specific: demote block from HOT to WARM without physical copy
+    bool demote_to_warm_zero_copy(const llama_kv_block_id & target_id);
+
+    // UMA-specific: promote block from WARM back to HOT (metadata flip only)
+    bool promote_from_warm_zero_copy(const llama_kv_block_id & target_id);
+
     // Remove block records when sequence or range is cleared
     void remove_seq(llama_seq_id seq_id, llama_pos p0 = 0, llama_pos p1 = -1);
 
@@ -360,5 +369,10 @@ private:
     size_t calculate_block_bytes() const;
     void allocate_staging_buffer();
     void free_staging_buffer();
+    void serialize_block_to_buffer(
+            const llama_kv_block_meta & meta,
+            const std::vector<ggml_tensor *> & k_layers,
+            const std::vector<ggml_tensor *> & v_layers,
+            void * out_buf);
 };
 
