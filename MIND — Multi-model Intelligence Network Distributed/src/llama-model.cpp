@@ -1,3 +1,4 @@
+#include "hardware/backend_manager.h"
 #include "llama-model.h"
 
 #include "llama-arch.h"
@@ -862,6 +863,16 @@ static buft_list_t make_cpu_buft_list(const std::vector<llama_device> & devices,
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_ACCEL) {
+            // ---- NEXUS BACKEND ORCHESTRATOR ----
+            const auto& placement = BackendManager::get_instance().get_current_placement();
+            if (std::string(ggml_backend_dev_name(dev)).find("Hexagon") != std::string::npos && !placement.use_hexagon) {
+                continue;
+            }
+            if (std::string(ggml_backend_dev_name(dev)).find("Adreno") != std::string::npos && !placement.use_adreno) {
+                continue;
+            }
+            // ------------------------------------
+
             auto * buft = ggml_backend_dev_buffer_type(dev);
             // skip
             if (buft != ggml_backend_cpu_buffer_type()) {

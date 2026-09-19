@@ -262,14 +262,14 @@ public:
             uint32_t stream_id,
             llama_kv_block_meta & out_evicted,
             llama_seq_id keep_seq = -1,
-            const llama_kv_cells * cells = nullptr);
+            llama_kv_cells * cells = nullptr);
 
     MemoryPressureAction check_memory_pressure_and_evict(
             std::vector<ggml_tensor *> & k_tensors,
             std::vector<ggml_tensor *> & v_tensors,
             uint32_t stream_id,
             llama_seq_id keep_seq,
-            const llama_kv_cells * cells);
+            llama_kv_cells * cells);
 
     // Check if query needs cold SSD blocks.
     // If not needed, 0 disk operations occur (saves SSD IOPS and wear).
@@ -288,13 +288,19 @@ public:
     bool load_state(const std::string & meta_path);
 
     // Swap block back into memory
-    bool swap_in_block(
+    int32_t swap_in_block(
             llama_seq_id seq_id,
             llama_pos pos_start,
             uint32_t cell_start,
             const std::vector<ggml_tensor *> & k_layers,
             const std::vector<ggml_tensor *> & v_layers,
-            uint32_t stream_id);
+            uint32_t stream_id,
+            llama_kv_cells * cells = nullptr);
+
+    void touch_or_promote_block(
+            const llama_kv_block_id & id,
+            uint32_t stream_id,
+            llama_kv_cells * cells);
 
     // Check if block is currently on SSD
     bool is_on_ssd(llama_seq_id seq_id, llama_pos pos_start) const;

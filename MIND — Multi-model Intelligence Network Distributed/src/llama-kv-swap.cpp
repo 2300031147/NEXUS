@@ -1239,7 +1239,7 @@ bool llama_kv_tiered_manager::evict_lru_block(
         uint32_t stream_id,
         llama_kv_block_meta & out_evicted,
         llama_seq_id keep_seq,
-        const llama_kv_cells * cells) {
+        llama_kv_cells * cells) {
 
     std::lock_guard<std::recursive_mutex> lock(mutex);
 
@@ -1314,27 +1314,92 @@ bool llama_kv_tiered_manager::evict_lru_block(
 
     const llama_kv_block_id target_id = *it;
     auto & meta = blocks[target_id];
-
-    serialize_block_to_buffer(meta, k_tensors, v_tensors, io_buffer);
-
     bool went_to_cold = false;
 
-    // Allocate RAM buffer and memcpy for WARM_RAM eviction
-    if (used_ram_bytes + block_bytes <= max_ram_bytes) {
-        // Fits in RAM, allocate and store
-        meta.ram_ptr = llama_kv_swap_aligned_malloc(block_bytes);
-        if (!meta.ram_ptr) {
-            fprintf(stderr, "%s: failed to allocate WARM_RAM buffer\n", __func__);
-            return false;
+    if (is_uma_zero_copy()) {
+        // UMA Logical chunking: transition without physically swapping to io_buffer
+        if (cells) {
+            for (uint32_t c = meta.cell_start; c < meta.cell_start + meta.id.n_tokens; ++c) {
+                cells->set_warm(c, true);
+                if (cells->seq_has(c, meta.id.seq_id)) {
+                    cells->seq_rm(c, meta.id.seq_id);
+                }
+            }
         }
-        std::memcpy(meta.ram_ptr, io_buffer, block_bytes);
-        used_ram_bytes += block_bytes;
         meta.set_tier(CacheTierType::WARM);
+        meta.ram_ptr = nullptr;
         meta.size = block_bytes;
-        
+
         warm_ram_list.push_front(meta.id);
         warm_ram_map[meta.id] = warm_ram_list.begin();
+
+        if (used_ram_bytes + block_bytes <= max_ram_bytes) {
+            used_ram_bytes += block_bytes;
+        } else if (!store) {
+            // No SSD tier, just clamp (or fail)
+        } else if (!warm_ram_list.empty()) {
+            auto warm_it = warm_ram_list.back();
+            auto & warm_meta = blocks[warm_it];
+            
+            int64_t warm_slot = store->alloc_slot();
+            if (warm_slot >= 0) {
+                serialize_block_to_buffer(warm_meta, k_tensors, v_tensors, io_buffer);
+                bool write_ok = false;
+                if (engine == llama_kv_swap_engine::PINNED_DMA || engine == llama_kv_swap_engine::POSIX_ALIGNED) {
+                    write_ok = store->write_block_direct((uint64_t) warm_slot, io_buffer, block_bytes);
+                } else {
+                    write_ok = store->write_block((uint64_t) warm_slot, io_buffer, block_bytes);
+                }
+                
+                if (write_ok) {
+                    if (cells && warm_meta.cell_start != (uint32_t)-1) {
+                        for (uint32_t c = warm_meta.cell_start; c < warm_meta.cell_start + warm_meta.id.n_tokens; ++c) {
+                            cells->set_warm(c, false);
+                            if (cells->seq_has(c, warm_meta.id.seq_id)) {
+                                cells->seq_rm(c, warm_meta.id.seq_id);
+                            }
+                        }
+                        warm_meta.cell_start = -1;
+                    }
+                    
+                    warm_meta.set_tier(CacheTierType::COLD);
+                    warm_meta.swap_slot = (uint64_t) warm_slot;
+                    warm_ram_map.erase(warm_it);
+                    warm_ram_list.pop_back();
+                    
+                    for (auto & tier : tiers) {
+                        if (tier.type == CacheTierType::WARM) {
+                            tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+                        }
+                        if (tier.type == CacheTierType::COLD) {
+                            tier.used += block_bytes;
+                        }
+                    }
+                    used_ram_bytes += block_bytes;
+                } else {
+                    store->free_slot((uint64_t) warm_slot);
+                }
+            }
+        }
     } else {
+        serialize_block_to_buffer(meta, k_tensors, v_tensors, io_buffer);
+
+        // Allocate RAM buffer and memcpy for WARM_RAM eviction
+        if (used_ram_bytes + block_bytes <= max_ram_bytes) {
+            // Fits in RAM, allocate and store
+            meta.ram_ptr = llama_kv_swap_aligned_malloc(block_bytes);
+            if (!meta.ram_ptr) {
+                fprintf(stderr, "%s: failed to allocate WARM_RAM buffer\n", __func__);
+                return false;
+            }
+            std::memcpy(meta.ram_ptr, io_buffer, block_bytes);
+            used_ram_bytes += block_bytes;
+            meta.set_tier(CacheTierType::WARM);
+            meta.size = block_bytes;
+            
+            warm_ram_list.push_front(meta.id);
+            warm_ram_map[meta.id] = warm_ram_list.begin();
+        } else {
         // RAM is full, evict oldest WARM_RAM block to COLD_SSD first
         if (!store) {
             return false; // No SSD tier available to evict to
@@ -1406,6 +1471,7 @@ bool llama_kv_tiered_manager::evict_lru_block(
             went_to_cold = true;
         }
     }
+}
 
     for (auto & tier : tiers) {
         if (tier.type == CacheTierType::HOT) {
@@ -1519,24 +1585,70 @@ std::vector<llama_kv_block_id> llama_kv_tiered_manager::get_recallable_blocks(
 int32_t llama_kv_tiered_manager::get_block_cell_start(const llama_kv_block_id & id, uint32_t stream_id) {
     std::lock_guard<std::recursive_mutex> lock(mutex);
     auto it = blocks.find(id);
-    if (it != blocks.end() && it->second.loc == llama_kv_block_loc::HOT_VRAM && it->second.stream_id == stream_id) {
-        return (int32_t) it->second.cell_start;
+    if (it != blocks.end() && it->second.stream_id == stream_id) {
+        if (it->second.loc == llama_kv_block_loc::HOT_VRAM || 
+            (it->second.loc == llama_kv_block_loc::WARM_RAM && is_uma_zero_copy())) {
+            return (int32_t) it->second.cell_start;
+        }
     }
     return -1;
 }
 
-bool llama_kv_tiered_manager::swap_in_block(
+void llama_kv_tiered_manager::touch_or_promote_block(const llama_kv_block_id & id, uint32_t stream_id, llama_kv_cells * cells) {
+    std::lock_guard<std::recursive_mutex> lock(mutex);
+    auto it = blocks.find(id);
+    if (it != blocks.end() && it->second.stream_id == stream_id) {
+        if (it->second.loc == llama_kv_block_loc::WARM_RAM && is_uma_zero_copy()) {
+            it->second.set_tier(CacheTierType::HOT);
+            it->second.access_count++;
+            it->second.access_ts = ++current_ts;
+            
+            auto warm_it = warm_ram_map.find(it->second.id);
+            if (warm_it != warm_ram_map.end()) {
+                warm_ram_list.erase(warm_it->second);
+                warm_ram_map.erase(warm_it);
+            }
+            if (used_ram_bytes >= block_bytes) used_ram_bytes -= block_bytes;
+            else used_ram_bytes = 0;
+            
+            auto lru_it = lru_map.find(it->first);
+            if (lru_it != lru_map.end()) lru_list.erase(lru_it->second);
+            lru_list.push_front(it->first);
+            lru_map[it->first] = lru_list.begin();
+            
+            for (auto & tier : tiers) {
+                if (tier.type == CacheTierType::WARM && tier.unified) {
+                    tier.used = (tier.used >= block_bytes) ? tier.used - block_bytes : 0;
+                }
+                if (tier.type == CacheTierType::HOT && tier.unified) tier.used += block_bytes;
+            }
+            
+            if (cells) {
+                for (uint32_t c = 0; c < it->second.id.n_tokens; ++c) {
+                    uint32_t cell_idx = it->second.cell_start + c;
+                    if (!cells->seq_has(cell_idx, it->second.id.seq_id)) {
+                        cells->seq_add(cell_idx, it->second.id.seq_id);
+                    }
+                    cells->set_warm(cell_idx, false);
+                }
+            }
+        }
+    }
+}
+
+int32_t llama_kv_tiered_manager::swap_in_block(
         llama_seq_id seq_id,
         llama_pos pos_start,
         uint32_t cell_start,
         const std::vector<ggml_tensor *> & k_layers,
         const std::vector<ggml_tensor *> & v_layers,
-        uint32_t stream_id) {
+        uint32_t stream_id,
+        llama_kv_cells * cells) {
 
     std::lock_guard<std::recursive_mutex> lock(mutex);
 
     if (pos_start < 0) {
-        return false;
+        return -1;
     }
 
     llama_kv_block_id id{seq_id, pos_start, 0};
@@ -1546,10 +1658,10 @@ bool llama_kv_tiered_manager::swap_in_block(
         it = blocks.find(llama_kv_block_id{seq_id, aligned_pos, 0});
     }
     if (it == blocks.end() || (it->second.loc != llama_kv_block_loc::COLD_SSD && it->second.loc != llama_kv_block_loc::WARM_RAM)) {
-        return false;
+        return -1;
     }
     if (cell_start + it->second.id.n_tokens > kv_size) {
-        return false;
+        return -1;
     }
 
     auto & meta = it->second;
@@ -1592,7 +1704,17 @@ bool llama_kv_tiered_manager::swap_in_block(
                 }
             }
 
-            return true;
+            if (cells) {
+                for (uint32_t c = 0; c < meta.id.n_tokens; ++c) {
+                    uint32_t cell_idx = meta.cell_start + c;
+                    if (!cells->seq_has(cell_idx, meta.id.seq_id)) {
+                        cells->seq_add(cell_idx, meta.id.seq_id);
+                    }
+                    cells->set_warm(cell_idx, false);
+                }
+            }
+
+            return meta.cell_start;
         }
 
         if (meta.ram_ptr) {
@@ -1608,26 +1730,12 @@ bool llama_kv_tiered_manager::swap_in_block(
                 warm_ram_list.erase(warm_it->second);
                 warm_ram_map.erase(warm_it);
             }
-        } else if (is_uma_zero_copy()) {
-            // UMA block cell relocation: serialize from old cell_start into io_buffer
-            serialize_block_to_buffer(meta, k_layers, v_layers, io_buffer);
-
-            auto warm_it = warm_ram_map.find(meta.id);
-            if (warm_it != warm_ram_map.end()) {
-                warm_ram_list.erase(warm_it->second);
-                warm_ram_map.erase(warm_it);
-            }
-            if (used_ram_bytes >= block_bytes) {
-                used_ram_bytes -= block_bytes;
-            } else {
-                used_ram_bytes = 0;
-            }
         } else {
-            return false;
+            return -1;
         }
     } else {
         if (!store->read_block(meta.swap_slot, io_buffer, block_bytes)) {
-            return false;
+            return -1;
         }
         store->free_slot(meta.swap_slot);
     }
@@ -1784,7 +1892,7 @@ bool llama_kv_tiered_manager::swap_in_block(
         }
     }
 
-    return true;
+    return (int32_t) eff_cell;
 }
 
 MemoryPressureAction llama_kv_tiered_manager::check_memory_pressure_and_evict(
@@ -1792,7 +1900,7 @@ MemoryPressureAction llama_kv_tiered_manager::check_memory_pressure_and_evict(
         std::vector<ggml_tensor *> & v_tensors,
         uint32_t stream_id,
         llama_seq_id keep_seq,
-        const llama_kv_cells * cells) {
+        llama_kv_cells * cells) {
 
     std::lock_guard<std::recursive_mutex> lock(mutex);
 
@@ -1848,6 +1956,16 @@ MemoryPressureAction llama_kv_tiered_manager::check_memory_pressure_and_evict(
                 }
 
                 if (write_ok) {
+                    if (is_uma_zero_copy() && cells && warm_meta.cell_start != (uint32_t)-1) {
+                        for (uint32_t c = warm_meta.cell_start; c < warm_meta.cell_start + warm_meta.id.n_tokens; ++c) {
+                            cells->set_warm(c, false);
+                            if (cells->seq_has(c, warm_meta.id.seq_id)) {
+                                cells->seq_rm(c, warm_meta.id.seq_id);
+                            }
+                        }
+                        warm_meta.cell_start = -1;
+                    }
+
                     warm_meta.set_tier(CacheTierType::COLD);
                     warm_meta.swap_slot = (uint64_t) warm_slot;
                     warm_ram_map.erase(warm_it);

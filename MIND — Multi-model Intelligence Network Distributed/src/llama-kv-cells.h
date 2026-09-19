@@ -37,6 +37,7 @@ public:
             ext[i].reset();
             shift[i] =  0;
             seq[i].reset();
+            if (i < warm.size()) warm[i] = false;
         }
 
         has_shift = false;
@@ -65,6 +66,7 @@ public:
         ext.resize(n);
         shift.resize(n);
         seq.resize(n);
+        warm.resize(n, false);
 
         reset();
     }
@@ -244,7 +246,7 @@ public:
         seq[i].reset(seq_id);
         seq_pos_dec(seq_id, pos[i]);
 
-        if (seq[i].none()) {
+        if (seq[i].none() && !warm[i]) {
             pos[i] = -1;
             ext[i].reset();
             shift[i] = 0;
@@ -275,13 +277,17 @@ public:
             seq_pos_rm(i);
             seq[i].reset();
 
-            pos[i] = -1;
-            ext[i].reset();
-            shift[i] = 0;
+            if (!warm[i]) {
+                pos[i] = -1;
+                ext[i].reset();
+                shift[i] = 0;
 
-            used.erase(i);
+                used.erase(i);
 
-            return true;
+                return true;
+            }
+
+            return false;
         }
 
         assert(pos[i] == -1);
@@ -309,10 +315,25 @@ public:
     void seq_add(uint32_t i, llama_seq_id seq_id) {
         assert(i < pos.size());
         assert(pos[i] != -1);
-        assert(!seq[i].test(seq_id));
+        assert(seq_id >= 0);
+        assert(seq_id < LLAMA_MAX_SEQ);
 
-        seq[i].set(seq_id);
-        seq_pos_inc(seq_id, pos[i]);
+        if (!seq[i].test(seq_id)) {
+            seq[i].set(seq_id);
+            seq_pos_inc(seq_id, pos[i]);
+        }
+    }
+
+    void set_warm(uint32_t i, bool is_warm) {
+        assert(i < warm.size());
+        warm[i] = is_warm;
+        
+        if (!is_warm && seq[i].none()) {
+            pos[i] = -1;
+            ext[i].reset();
+            shift[i] = 0;
+            used.erase(i);
+        }
     }
 
     // return the sequence id of this cell
@@ -498,6 +519,9 @@ private:
 
     // the bitset seq[i] tells us which sequences are currently occupying the i-th cell
     std::vector<seq_set_t> seq;
+
+    // whether the cell is held in WARM storage (logical chunking)
+    std::vector<bool> warm;
 
     // the set seq_pos[s][p] tells us how many times the position p is currently present for sequence s
     // if the position p is not present, seq_pos[s][p] is not set

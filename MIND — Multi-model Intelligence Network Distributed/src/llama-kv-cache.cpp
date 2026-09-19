@@ -1323,6 +1323,7 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
                 // If it's already in HOT_VRAM and on the SAME stream, just share it zero-copy!
                 int32_t hot_cell_start = swap_mgr->get_block_cell_start(bid, sinfo.strm[s]);
                 if (hot_cell_start >= 0) {
+                    swap_mgr->touch_or_promote_block(bid, sinfo.strm[s], &cells);
                     if (bid.seq_id != seq_id) {
                         if (cells.seq_has_pos_range(seq_id, bid.pos_start, bid.pos_start + (llama_pos) bid.n_tokens)) {
                             continue; // skip if seq_id already has tokens at these positions
@@ -1385,9 +1386,10 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
                 }
 
                 if (count == bid.n_tokens && empty_start >= 0) {
-                    if (swap_mgr->swap_in_block(bid.seq_id, bid.pos_start, empty_start, k_tensors, v_tensors, sinfo.strm[s])) {
+                    int32_t actual_cell_start = swap_mgr->swap_in_block(bid.seq_id, bid.pos_start, empty_start, k_tensors, v_tensors, sinfo.strm[s], &cells);
+                    if (actual_cell_start >= 0) {
                         for (uint32_t c = 0; c < bid.n_tokens; ++c) {
-                            const uint32_t idx = empty_start + c;
+                            const uint32_t idx = actual_cell_start + c;
                             if (idx < cells.size()) {
                                 cells.pos_set(idx, bid.pos_start + (llama_pos) c);
                                 if (!cells.seq_has(idx, bid.seq_id)) {

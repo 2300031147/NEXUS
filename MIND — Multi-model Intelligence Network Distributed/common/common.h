@@ -474,6 +474,8 @@ struct common_params {
 
     enum llama_split_mode split_mode = LLAMA_SPLIT_MODE_LAYER; // how to split the model across GPUs
     enum llama_load_mode  load_mode  = LLAMA_LOAD_MODE_AUTO; // how to load the model
+    
+    bool simulate_hardware = false; // Override HardwareDetector to use simulated Snapdragon/UMA topology
 
     common_cpu_params cpuparams;
     common_cpu_params cpuparams_batch;

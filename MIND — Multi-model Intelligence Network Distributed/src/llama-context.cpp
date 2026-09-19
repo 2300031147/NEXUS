@@ -1,3 +1,4 @@
+#include "hardware/backend_manager.h"
 #include "llama-context.h"
 
 #include "ggml.h"
@@ -343,6 +344,16 @@ llama_context::llama_context(
         for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
             ggml_backend_dev_t dev = ggml_backend_dev_get(i);
             if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_ACCEL) {
+                // ---- NEXUS BACKEND ORCHESTRATOR ----
+                const auto& placement = BackendManager::get_instance().get_current_placement();
+                if (std::string(ggml_backend_dev_name(dev)).find("Hexagon") != std::string::npos && !placement.use_hexagon) {
+                    continue;
+                }
+                if (std::string(ggml_backend_dev_name(dev)).find("Adreno") != std::string::npos && !placement.use_adreno) {
+                    continue;
+                }
+                // ------------------------------------
+
                 ggml_backend_t backend = ggml_backend_dev_init(dev, nullptr);
                 if (backend == nullptr) {
                     throw std::runtime_error(format("failed to initialize %s backend", ggml_backend_dev_name(dev)));

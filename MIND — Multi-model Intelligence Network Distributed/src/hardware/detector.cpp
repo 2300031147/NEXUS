@@ -1,7 +1,43 @@
 #include "detector.h"
 #include <cstdio>
+#include <cstdlib>
+#include <string>
+
+bool HardwareDetector::simulation_enabled = false;
+
+void HardwareDetector::override_simulation(bool enable) {
+    simulation_enabled = enable;
+}
+
+bool HardwareDetector::is_simulation_enabled() {
+    if (simulation_enabled) return true;
+    const char * env = getenv("NEXUS_SIMULATE_HARDWARE");
+    if (env && std::string(env) == "1") return true;
+    return false;
+}
 
 MemoryTopology HardwareDetector::detect() {
+    if (is_simulation_enabled()) {
+        MemoryTopology topo;
+        topo.architecture = "aarch64";
+        topo.device_model = "Snapdragon X Elite Compute Platform";
+        topo.unified_memory = true;
+        topo.accelerator = "qualcomm";
+        topo.accelerator_memory = 0; // UMA
+        topo.system_memory = 32ULL * 1024 * 1024 * 1024; // 32 GB fake RAM
+        topo.storage_capacity = 1000ULL * 1024 * 1024 * 1024; // 1 TB fake SSD
+        topo.storage_free = 500ULL * 1024 * 1024 * 1024;
+        topo.profile_name = "accelerator";
+        
+        topo.compute.has_gpu = true;
+        topo.compute.gpu_backend = "adreno";
+        topo.compute.has_npu = true;
+        topo.compute.npu_backend = "hexagon";
+        topo.compute.cpu_backend = "arm_neon";
+        
+        return topo;
+    }
+
 #if defined(__APPLE__)
     return detect_macos_topology();
 #elif defined(_WIN32)

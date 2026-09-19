@@ -10,6 +10,9 @@
 #include "llama-model-saver.h"
 #include "llama-model.h"
 
+#include "hardware/backend_manager.h"
+#include "hardware/detector.h"
+
 #include "ggml.h"
 #include "ggml-cpp.h"
 #include "ggml-backend.h"
@@ -218,6 +221,13 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                 devs.data(), devs.size(), llama_meta_device_get_split_state, &model->get_split_state_ud)
             });
         } else {
+            // ---- NEXUS BACKEND ORCHESTRATOR ----
+            // Evaluate model capabilities (assuming Q4_K_M as a default for now if we can't extract it early)
+            ModelCapabilities caps = CapabilityMatrix::evaluate_model(model->arch_name().empty() ? "llama" : model->arch_name(), "Q4_K_M");
+            BackendPlacement placement = BackendManager::get_instance().plan_placement(caps);
+            BackendManager::get_instance().apply_placement(placement);
+            // ------------------------------------
+
             for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
                 ggml_backend_dev_t dev = ggml_backend_dev_get(i);
                 switch (ggml_backend_dev_type(dev)) {
@@ -250,7 +260,14 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
                                         props.device_id ? props.device_id : "unknown id",
                                         ggml_backend_dev_name(it->dev), ggml_backend_dev_description(it->dev));
                             } else {
-                                gpus.push_back({false, dev});
+                                if ((std::string(ggml_backend_dev_name(dev)).find("Adreno") != std::string::npos && !placement.use_adreno) ||
+                                    (std::string(ggml_backend_dev_name(dev)).find("Hexagon") != std::string::npos && !placement.use_hexagon)) {
+                                    LLAMA_LOG_INFO("%s: skipping device %s (%s) due to NEXUS BackendManager placement policy\n",
+                                            __func__,
+                                            ggml_backend_dev_name(dev), ggml_backend_dev_description(dev));
+                                } else {
+                                    gpus.push_back({false, dev});
+                                }
                             }
                         }
                         break;
